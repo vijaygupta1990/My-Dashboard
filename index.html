@@ -229,7 +229,7 @@ a{color:var(--signal-deep);}
 #dash-company{font-size:.72rem; color:var(--slate-soft); font-weight:600; text-transform:uppercase; letter-spacing:.05em;}
 
 /* ---------- Freeform dashboard canvas ---------- */
-#dashboard-canvas{position:relative; width:100%; min-height:300px;}
+#dashboard-canvas{position:relative; width:100%; min-height:300px; border:1px solid var(--border); border-radius:var(--radius-md); padding:16px;}
 #dashboard-canvas.grid-on{
   background-image:linear-gradient(to right, var(--border) 1px, transparent 1px), linear-gradient(to bottom, var(--border) 1px, transparent 1px);
   background-size:20px 20px;
@@ -967,7 +967,9 @@ service cloud.firestore {
             <option value="dropdown">Dropdown</option><option value="multiselect">Multi Select</option>
             <option value="search">Search Box</option><option value="checkbox">Checkbox</option>
             <option value="radio">Radio Button</option><option value="daterange">Date Range</option>
-            <option value="month">Month</option><option value="year">Year</option><option value="numberrange">Number Range</option>
+            <option value="asondate">As-On-Date</option>
+            <option value="month">Month (FY Order)</option><option value="monthcombo">Combined Month Selection</option>
+            <option value="year">Financial Year</option><option value="numberrange">Number Range</option>
           </select>
           <button class="tb-btn primary w-100" type="submit"><i class="fa-solid fa-plus"></i> Add Filter</button>
         </form>
@@ -989,6 +991,17 @@ service cloud.firestore {
             <option value="number">Rounded number (Indian grouping)</option>
             <option value="currency">Currency (₹ INR, rounded)</option>
           </select>
+          <div class="d-none" id="table-dateagg-row">
+            <label class="form-label mini">Date Format</label>
+            <select class="form-select form-select-sm mb-2" id="table-dateagg">
+              <option value="none">None (raw date)</option>
+              <option value="day">Day</option>
+              <option value="month">Month</option>
+              <option value="quarter">Quarter</option>
+              <option value="year">Year</option>
+              <option value="monthyear">Month &amp; Year</option>
+            </select>
+          </div>
           <label class="form-label mini">Footer Calculations (numeric columns)</label>
           <select class="form-select form-select-sm mb-2" id="table-footer-calc">
             <option value="none">None</option><option value="sum">Sum</option><option value="avg">Average</option>
@@ -1045,6 +1058,17 @@ service cloud.firestore {
           <div class="row g-2 mb-2">
             <div class="col-6"><label class="form-label mini" id="chart-x-label">X Axis</label><select class="form-select form-select-sm" id="chart-x"></select></div>
             <div class="col-6"><label class="form-label mini" id="chart-y-label">Y Axis</label><select class="form-select form-select-sm" id="chart-y"></select></div>
+          </div>
+          <div class="row g-2 mb-2 d-none" id="chart-dateagg-row">
+            <div class="col-12">
+              <label class="form-label mini">Date Format</label>
+              <select class="form-select form-select-sm" id="chart-dateagg">
+                <option value="day">As-It-Date</option>
+                <option value="month">Month</option>
+                <option value="year">Year</option>
+                <option value="monthcombo">Combined Month Selection</option>
+              </select>
+            </div>
           </div>
           <div class="row g-2 mb-2 d-none" id="chart-ymax-row">
             <div class="col-6"><label class="form-label mini">Y Axis (Max)</label><select class="form-select form-select-sm" id="chart-ymax"></select></div>
@@ -1313,6 +1337,49 @@ const Utils = {
   debounce(fn, wait){
     let t; return function(...args){ clearTimeout(t); t = setTimeout(()=>fn.apply(this,args), wait); };
   },
+  // Financial year (Apr–Mar) helpers — derived on the fly from the same date column every
+  // other date-based filter already reads. No new stored fields; FY start year, label
+  // ("2026-27"), and FY-order month position (Apr=1 ... Mar=12) are all computed from the
+  // calendar month/year of the existing Date value.
+  FY_MONTH_ORDER: [4,5,6,7,8,9,10,11,12,1,2,3],
+  FY_MONTH_ABBR: {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'},
+  fyStartYear(d){ const m = d.getMonth()+1, y = d.getFullYear(); return m >= 4 ? y : y - 1; },
+  fyLabel(startYear){ return `${startYear}-${String((startYear+1) % 100).padStart(2,'0')}`; },
+  fyQuarter(calMonth){ return calMonth >= 4 && calMonth <= 6 ? 1 : calMonth >= 7 && calMonth <= 9 ? 2 : calMonth >= 10 && calMonth <= 12 ? 3 : 4; },
+  // Date-aggregation labels for the "Date Format" dropdown (chart X-axis + table date columns).
+  // month/quarter labels are deliberately year-less (e.g. "Apr", "Q1") so rows from every year
+  // roll up into the same bucket, matching how "Month" and "Quarter" are meant to summarise.
+  DATE_AGG_MONTHS: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+  // Apr=0 ... Mar=11 — financial-year position for a given Date.getMonth() (0=Jan...11=Dec).
+  fyMonthIndex(mo){ return (mo + 9) % 12; },
+  dateAggLabel(d, mode){
+    if (!d) return '';
+    const mo = d.getMonth(), yr = d.getFullYear();
+    switch(mode){
+      case 'day': return d.toLocaleDateString();
+      case 'month': case 'monthcombo': return Utils.DATE_AGG_MONTHS[mo];
+      // Financial quarter (Apr-Jun=Q1 ... Jan-Mar=Q4), matching Utils.fyQuarter/fyStartYear used
+      // everywhere else in the app — NOT a calendar quarter. mo is 0-indexed (Jan=0), fyQuarter
+      // expects 1-indexed calendar month.
+      case 'quarter': return 'Q' + Utils.fyQuarter(mo + 1);
+      case 'year': return String(yr);
+      case 'monthyear': return Utils.DATE_AGG_MONTHS[mo] + ' ' + yr;
+      default: return d.toLocaleDateString();
+    }
+  },
+  // Sort key so labels order chronologically instead of alphabetically (e.g. Jan..Dec, not
+  // Apr, Aug, Dec, Feb...). Month/Combined-Month/Quarter all use financial-year order (Apr..Mar) per spec.
+  dateAggSortKey(d, mode){
+    const mo = d.getMonth(), yr = d.getFullYear();
+    switch(mode){
+      case 'day': return d.getTime();
+      case 'month': case 'monthcombo': return Utils.fyMonthIndex(mo);
+      case 'quarter': return Utils.fyQuarter(mo + 1);
+      case 'year': return yr;
+      case 'monthyear': return yr*12+mo;
+      default: return d.getTime();
+    }
+  },
   palette: ['#0EA5A0','#7C6FE0','#F5A524','#E5484D','#3B82F6','#22C55E','#EC4899','#F97316','#14B8A6','#8B5CF6','#EAB308','#06B6D4'],
   colorFor(i){ return Utils.palette[i % Utils.palette.length]; },
   esc(str){ return String(str === null || str === undefined ? '' : str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
@@ -1477,24 +1544,38 @@ const DataMgr = {
     }
 
     const wired = DataMgr._applyGsheetWorkbook.bind(DataMgr);
-    try {
-      const res = await fetch(DataMgr.exportXlsxUrl(sheetId, kind), { cache: 'no-store' });
-      if (res.ok){
-        const buf = await res.arrayBuffer();
-        const head = new TextDecoder('utf-8').decode(buf.slice(0, 300)).trim();
-        const looksLikeHtml = /^<!DOCTYPE html/i.test(head) || /^<html/i.test(head);
-        if (!looksLikeHtml && buf.byteLength){
-          const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-          if (wb.SheetNames && wb.SheetNames.length){ wired(wb, opts); return true; }
-          throw new Error('empty: workbook had no sheets');
+    // The full-workbook (xlsx) export is the ONLY request that returns every tab in one shot —
+    // it's what keeps a multi-sheet dashboard's joins alive across a refresh. Google's export
+    // endpoint occasionally hiccups under load (5xx/429, or a dropped connection), so retry a
+    // few times with backoff before giving up and dropping to the single-tab CSV fallback below.
+    const XLSX_RETRY_ATTEMPTS = 3;
+    const XLSX_RETRY_DELAY_MS = 700;
+    for (let attempt = 1; attempt <= XLSX_RETRY_ATTEMPTS; attempt++){
+      try {
+        const res = await fetch(DataMgr.exportXlsxUrl(sheetId, kind), { cache: 'no-store' });
+        if (res.ok){
+          const buf = await res.arrayBuffer();
+          const head = new TextDecoder('utf-8').decode(buf.slice(0, 300)).trim();
+          const looksLikeHtml = /^<!DOCTYPE html/i.test(head) || /^<html/i.test(head);
+          if (!looksLikeHtml && buf.byteLength){
+            const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+            if (wb.SheetNames && wb.SheetNames.length){ wired(wb, opts); return true; }
+            throw new Error('empty: workbook had no sheets');
+          }
+          break; // got a real (non-transient) response that just isn't a workbook — retrying won't change that
+        } else if (res.status === 401 || res.status === 403 || res.status === 404){
+          Utils.toast(DataMgr.friendlyGSheetError(null, res), true); return false; // permission/not-found — retrying can't fix this
+        } else if (attempt < XLSX_RETRY_ATTEMPTS){
+          await new Promise(r => setTimeout(r, XLSX_RETRY_DELAY_MS * attempt));
+          continue;
         }
-      } else if (res.status === 401 || res.status === 403){
-        Utils.toast(DataMgr.friendlyGSheetError(null, res), true); return false;
-      } else if (res.status === 404){
-        Utils.toast(DataMgr.friendlyGSheetError(null, res), true); return false;
+      } catch (err){
+        if (attempt < XLSX_RETRY_ATTEMPTS){
+          await new Promise(r => setTimeout(r, XLSX_RETRY_DELAY_MS * attempt));
+          continue;
+        }
+        console.warn('Full-workbook (xlsx) export of Google Sheet failed after retries, falling back to single-tab CSV', err);
       }
-    } catch (err){
-      console.warn('Full-workbook (xlsx) export of Google Sheet failed, falling back to single-tab CSV', err);
     }
     const attempts = [DataMgr.gvizCsvUrl(sheetId, gid, kind), DataMgr.exportCsvUrl(sheetId, gid, kind)];
     let lastErr = null, lastRes = null;
@@ -1507,14 +1588,40 @@ const DataMgr = {
         if (!csvText || /^<!DOCTYPE html/i.test(csvText.trim())) throw new Error('private: looks like a login/HTML page, not CSV');
         if (!csvText.trim()) throw new Error('empty: sheet returned no data');
         const wb = XLSX.read(csvText, { type: 'string', cellDates: true });
-        App.workbookRef = wb; App.sheetNames = wb.SheetNames;
-        App.dataSource.gsheetName = wb.SheetNames[0]; App.fileName = 'Google Sheet';
-        document.getElementById('sheet-picker-wrap').classList.add('d-none');
+        const csvSheetName = wb.SheetNames[0];
+        const csvRows = XLSX.utils.sheet_to_json(wb.Sheets[csvSheetName], { defval: '' });
+        const csvColumns = csvRows.length ? Object.keys(csvRows[0]) : [];
+        const csvColumnTypes = {};
+        csvColumns.forEach(c => csvColumnTypes[c] = DataMgr.detectTypeFor(csvRows, c));
+
+        // This CSV export can only ever return ONE tab (whichever `gid` is being refreshed) —
+        // never the whole workbook. If a multi-sheet data model is already loaded (relationships
+        // configured across e.g. Customer Details / Order Sheet / Payment Sheet), blowing away
+        // App.sheetTables here would silently delete the other tabs and break every join built on
+        // top of them — which is exactly the "relationships disappear on refresh" bug. So: merge
+        // this one refreshed tab into the existing model instead of replacing it wholesale, then
+        // funnel through the same _applySheetTables() path every other refresh uses, so saved
+        // relationships get re-applied instead of skipped.
+        const hasExistingModel = App.sheetTables && Object.keys(App.sheetTables).length > 0;
+        const targetName = (hasExistingModel && App.dataSource.gsheetName && App.sheetTables[App.dataSource.gsheetName])
+          ? App.dataSource.gsheetName
+          : csvSheetName;
+
+        App.workbookRef = null; // no full workbook available from this fallback — sheetTables is now the source of truth
+        if (hasExistingModel){
+          App.sheetTables[targetName] = { name: targetName, columns: csvColumns, columnTypes: csvColumnTypes, rows: csvRows };
+        } else {
+          App.sheetTables = { [targetName]: { name: targetName, columns: csvColumns, columnTypes: csvColumnTypes, rows: csvRows } };
+          App.sheetNames = [targetName];
+          App.dataSource.gsheetName = targetName;
+          document.getElementById('sheet-picker-wrap').classList.add('d-none');
+        }
+        App.fileName = 'Google Sheet';
         UI.renderDataSourceStatus();
-        DataMgr.buildSheetTablesFromWorkbook(wb);
-        DataMgr.loadSheet(wb.SheetNames[0]);
         DataMgr.writeGsheetCache(sheetId, kind, gid, App.sheetTables, App.sheetNames);
+        DataMgr._applySheetTables(opts, { fromCache: false }); // re-runs Auto-Detect's saved relationships/join, same as the full-workbook path
         if (opts.initial) Utils.toast('Connected to Google Sheet (only one tab could be read)');
+        else if (hasExistingModel && App.relationships && App.relationships.length) Utils.toast('Refreshed the primary sheet — other joined tabs kept their last synced data (a full multi-tab refresh wasn\u2019t available this time).', true);
         return true;
       } catch (err){ lastErr = err; continue; }
     }
@@ -1569,7 +1676,16 @@ const DataMgr = {
     const target = (App.dataSource.gsheetName && names.includes(App.dataSource.gsheetName)) ? App.dataSource.gsheetName : names[0];
     App.dataSource.gsheetName = target;
     if (!App.selectedSheets.length) App.selectedSheets = [target];
-    DataMgr.loadSheet(target);
+    // If this dashboard has a saved multi-sheet data model (relationships between tabs — e.g. a
+    // Sales dashboard joining Sheet1..Sheet5), re-run it against the just-refetched tabs so a
+    // background refresh / reload always recomputes the FULL model, not just the primary tab.
+    // Otherwise (no relationships configured) this is the original single-sheet behavior.
+    if (App.relationships && App.relationships.length){
+      const ok = DataMgr.applyRelationships({ silent: true });
+      if (!ok) DataMgr.loadSheet(target); // relationships no longer resolve (e.g. a joined tab was removed) — fall back rather than show nothing
+    } else {
+      DataMgr.loadSheet(target);
+    }
 
     if (names.length > 1){
       document.getElementById('sheet-picker-wrap').classList.remove('d-none');
@@ -1606,9 +1722,19 @@ const DataMgr = {
     UI.refreshAll();
   },
   loadSheet(sheetName){
-    if (!App.workbookRef) return;
-    const sheet = App.workbookRef.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    let rows;
+    if (App.workbookRef){
+      const sheet = App.workbookRef.Sheets[sheetName];
+      if (!sheet) return;
+      rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    } else if (App.sheetTables && App.sheetTables[sheetName]){
+      // No live workbook available (e.g. right after a Google Sheets cache-hit load, or the
+      // single-tab CSV refresh fallback) — read from the already-parsed sheetTables model instead
+      // of silently doing nothing, which previously left the dashboard showing stale/no data.
+      rows = App.sheetTables[sheetName].rows.map(r => ({ ...r }));
+    } else {
+      return;
+    }
     if (!rows.length) { Utils.toast(`Sheet "${sheetName}" appears to be empty.`, true); return; }
     const prevColumns = App.columns || [];
     App.data = rows;
@@ -1622,6 +1748,41 @@ const DataMgr = {
     UI.renderUploadSummary();
     UI.populateAllColumnSelectors();
     UI.refreshAll();
+  },
+  // Recomputes App.data by joining every configured relationship across the selected sheet tabs
+  // (Sheet1..Sheet5, etc) — this is the shared "apply the multi-sheet data model" path used both
+  // by the manual "Combine Sheets" button AND automatically after every live refetch (initial
+  // connect, background auto-refresh, explicit Refresh, and a shared-link reload), so a saved
+  // multi-sheet dashboard keeps recombining its sheets the same way every time, not just once.
+  // opts.silent suppresses the toasts for the automatic paths; the manual button still gets them.
+  applyRelationships(opts){
+    opts = opts || {};
+    if (!App.dataSource.gsheetName){ if (!opts.silent) Utils.toast('Pick a primary sheet first', true); return false; }
+    const { rows, errors, warnings } = JoinEngine.run(App.dataSource.gsheetName, App.relationships);
+    const box = document.getElementById('rel-validation');
+    if (box){
+      box.innerHTML = errors.map(e => `<div class="text-danger">${Utils.esc(e)}</div>`).join('')
+        + warnings.map(w => `<div class="text-warning">${Utils.esc(w)}</div>`).join('');
+    }
+    // A relationship that fails to join at all is a real data problem — one a person can't see or
+    // fix if it only ever shows up in a hidden panel during a *silent* background refresh. So this
+    // always toasts, even on auto-refresh; only the "combined sheets" SUCCESS toast is silenced.
+    if (errors.length){
+      Utils.toast(`⚠ ${errors.length} relationship(s) could not be joined and were skipped: ${errors[0]}${errors.length > 1 ? ` (+${errors.length - 1} more — see Join Manager)` : ''}`, true);
+    }
+    if (!rows.length){
+      if (!opts.silent) Utils.toast('Join produced no rows — check your relationships', true);
+      return false;
+    }
+    const prevColumns = App.columns || [];
+    App.data = rows; App.columns = Object.keys(rows[0]); App.columnTypes = {};
+    App.columns.forEach(c => App.columnTypes[c] = DataMgr.detectTypeFor(rows, c));
+    App.filteredCache = null; App.uploadDate = new Date();
+    if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
+    CalcFieldMgr.applyAll();
+    UI.renderUploadSummary(); UI.populateAllColumnSelectors(); UI.refreshAll();
+    if (!opts.silent) Utils.toast(`Combined sheets — ${rows.length.toLocaleString()} rows, ${App.columns.length} columns.`);
+    return true;
   },
   // Runs whenever a re-fetch (Google Sheet / re-uploaded file) produces a different column set than
   // last time — e.g. someone renamed, added, or removed a header at the source. Any KPI/filter/table/
@@ -1692,6 +1853,10 @@ const DataMgr = {
   crossFilterPredicate(){
     const cf = App.crossFilter;
     if (!cf) return null;
+    if (cf.range){
+      const { lo, hi, last } = cf.range;
+      return row => { const v = Number(row[cf.column]); return !isNaN(v) && v >= lo && (last ? v <= hi : v < hi); };
+    }
     return row => {
       const v = row[cf.column];
       const cmp = v instanceof Date ? v.toLocaleDateString() : v;
@@ -1743,19 +1908,22 @@ const DataMgr = {
     const rows = DataMgr.getFilteredExcluding(excludeId);
     const set = new Set();
     rows.forEach(r => { const d = Utils.toDate(r[col]); if (d) set.add(d.getMonth()+1); });
-    return Array.from(set).sort((a,b)=>a-b);
+    // Financial-year order (Apr..Mar), not calendar/alphabetical order.
+    return Array.from(set).sort((a,b)=> Utils.FY_MONTH_ORDER.indexOf(a) - Utils.FY_MONTH_ORDER.indexOf(b));
   },
-  distinctYearsFiltered(col, excludeId){
+  // "Year" here means Financial Year (Apr–Mar) per Chapter 2 — returns the FY start years
+  // present in the data (e.g. 2026 for FY 2026-27), computed from the same date column.
+  distinctFYYearsFiltered(col, excludeId){
     const rows = DataMgr.getFilteredExcluding(excludeId);
     const set = new Set();
-    rows.forEach(r => { const d = Utils.toDate(r[col]); if (d) set.add(d.getFullYear()); });
+    rows.forEach(r => { const d = Utils.toDate(r[col]); if (d) set.add(Utils.fyStartYear(d)); });
     return Array.from(set).sort((a,b)=>a-b);
   },
   buildPredicate(f){
     const v = App.filterValues[f.id];
     const col = f.column;
     switch(f.type){
-      case 'dropdown': case 'radio': return row => String(row[col]) === String(v);
+      case 'dropdown': case 'radio': return row => String(row[col] instanceof Date ? row[col].toISOString().slice(0,10) : row[col]) === String(v);
       case 'multiselect': case 'checkbox': { const set = new Set(v); return row => set.has(String(row[col] instanceof Date ? row[col].toISOString().slice(0,10) : row[col])); }
       case 'search': { const needle = String(v).toLowerCase(); return row => String(row[col]).toLowerCase().includes(needle); }
       case 'daterange': {
@@ -1767,7 +1935,9 @@ const DataMgr = {
         };
       }
       case 'month': return row => { const d = Utils.toDate(row[col]); return d && (d.getMonth()+1) === parseInt(v); };
-      case 'year': return row => { const d = Utils.toDate(row[col]); return d && d.getFullYear() === parseInt(v); };
+      case 'year': return row => { const d = Utils.toDate(row[col]); return d && Utils.fyLabel(Utils.fyStartYear(d)) === String(v); };
+      case 'asondate': return row => { const d = Utils.toDate(row[col]); return d && d.toISOString().slice(0,10) === v; };
+      case 'monthcombo': { const set = new Set((v||[]).map(String)); return row => { const d = Utils.toDate(row[col]); return d && set.has(String(d.getMonth()+1)); }; }
       case 'numberrange': {
         const min = v.min !== '' && v.min !== undefined ? parseFloat(v.min) : -Infinity;
         const max = v.max !== '' && v.max !== undefined ? parseFloat(v.max) : Infinity;
@@ -1800,26 +1970,36 @@ const RelationshipMgr = {
     App.relationships = found;
     return found;
   },
-  // Checks a relationship for: missing tables/columns, duplicate keys (which fan out rows), null
-  // keys, and datatype mismatches between the two sides — returns [] when the relationship is safe to join on.
+  // Checks a relationship for problems. Returns { errors, warnings }:
+  //  - errors:   genuinely make the join impossible/wrong (missing table/column, incompatible
+  //              types) — these skip the relationship entirely.
+  //  - warnings: real-world data-quality noise (blank key cells, duplicate keys, no overlapping
+  //              rows) that's extremely common in live Google Sheets and should NOT disable the
+  //              whole join — joinTwo() already handles blank keys per-row, and duplicate/no-match
+  //              are just informational so the person can see what's going on without losing data.
   validate(rel){
-    const errors = [];
+    const errors = [], warnings = [];
     const L = App.sheetTables[rel.base], R = App.sheetTables[rel.other];
-    if (!L || !R) return ['One of these tables is no longer loaded.'];
+    if (!L || !R) return { errors: ['One of these tables is no longer loaded.'], warnings };
     rel.baseKeys.forEach(k => { if (!L.columns.includes(k)) errors.push(`"${k}" not found in ${L.name}`); });
     rel.otherKeys.forEach(k => { if (!R.columns.includes(k)) errors.push(`"${k}" not found in ${R.name}`); });
-    if (errors.length) return errors;
+    if (errors.length) return { errors, warnings };
     rel.baseKeys.forEach((k,i) => {
       const rk = rel.otherKeys[i];
       if (L.columnTypes[k] !== R.columnTypes[rk]) errors.push(`Type mismatch: ${L.name}.${k} (${L.columnTypes[k]}) vs ${R.name}.${rk} (${R.columnTypes[rk]})`);
     });
+    if (errors.length) return { errors, warnings };
     const keyStr = (row, keys) => keys.map(k => row[k]).join('\u241F');
-    const lKeys = L.rows.map(r => keyStr(r, rel.baseKeys));
-    const rKeys = R.rows.map(r => keyStr(r, rel.otherKeys));
-    if (lKeys.some(k => k === '' || k == null) || rKeys.some(k => k === '' || k == null)) errors.push('Some join key values are empty/null.');
-    if (new Set(lKeys).size !== lKeys.length) errors.push(`Duplicate keys in ${L.name} — matching rows in ${R.name} will be duplicated (fan-out).`);
-    if (!errors.length && !rKeys.some(k => lKeys.includes(k))) errors.push(`No matching keys found between ${L.name} and ${R.name} — check the key columns.`);
-    return errors;
+    const isBlankKey = (row, keys) => keys.some(k => row[k] === '' || row[k] === null || row[k] === undefined);
+    const lRowsNonBlank = L.rows.filter(r => !isBlankKey(r, rel.baseKeys));
+    const rRowsNonBlank = R.rows.filter(r => !isBlankKey(r, rel.otherKeys));
+    const lKeys = lRowsNonBlank.map(r => keyStr(r, rel.baseKeys));
+    const rKeys = rRowsNonBlank.map(r => keyStr(r, rel.otherKeys));
+    const blankCount = L.rows.length - lRowsNonBlank.length;
+    if (blankCount > 0) warnings.push(`${blankCount} row(s) in ${L.name} have a blank join key and were left unjoined.`);
+    if (new Set(lKeys).size !== lKeys.length) warnings.push(`Duplicate keys in ${L.name} — matching rows in ${R.name} will be duplicated (fan-out) for those.`);
+    if (lKeys.length && rKeys.length && !rKeys.some(k => lKeys.includes(k))) warnings.push(`No matching keys found between ${L.name} and ${R.name} — check the key columns.`);
+    return { errors, warnings };
   }
 };
 
@@ -1833,13 +2013,21 @@ const RelationshipMgr = {
 const JoinEngine = {
   joinTwo(leftRows, leftKeys, rightRows, rightKeys, rightCols, type){
     const keyStr = (row, keys) => keys.map(k => row[k]).join('\u241F');
+    // A blank/empty join-key value (very common in Google Sheets exports — trailing blank rows,
+    // an unfilled cell here and there) should just mean THAT row doesn't participate in the join,
+    // not that the whole relationship gets thrown out. Rows with a blank key are excluded from the
+    // match index and always treated as "no match" — they still come through on a left/full join
+    // with blanks for the joined columns, exactly like any other unmatched row.
+    const keyIsBlank = (row, keys) => keys.some(k => row[k] === '' || row[k] === null || row[k] === undefined);
     const rightIndex = new Map();
-    rightRows.forEach(r => { const k = keyStr(r, rightKeys); if (!rightIndex.has(k)) rightIndex.set(k, []); rightIndex.get(k).push(r); });
+    rightRows.forEach(r => {
+      if (keyIsBlank(r, rightKeys)) return;
+      const k = keyStr(r, rightKeys); if (!rightIndex.has(k)) rightIndex.set(k, []); rightIndex.get(k).push(r);
+    });
     const prefix = (row, exceptKeys) => { const out = {}; Object.keys(row).forEach(c => { if (!exceptKeys.includes(c)) out[c] = row[c]; }); return out; };
     const out = []; const matchedRight = new Set();
     leftRows.forEach(lr => {
-      const k = keyStr(lr, leftKeys);
-      const matches = rightIndex.get(k);
+      const matches = keyIsBlank(lr, leftKeys) ? null : rightIndex.get(keyStr(lr, leftKeys));
       if (matches && matches.length){
         matches.forEach(rr => { matchedRight.add(rr); out.push({ ...lr, ...prefix(rr, rightKeys) }); });
       } else if (type === 'left' || type === 'full'){
@@ -1848,26 +2036,31 @@ const JoinEngine = {
       }
     });
     if (type === 'right' || type === 'full'){
-      rightRows.forEach(rr => { if (!matchedRight.has(rr)) out.push({ ...prefix(rr, []) }); });
+      rightRows.forEach(rr => { if (!matchedRight.has(rr) && !keyIsBlank(rr, rightKeys)) out.push({ ...prefix(rr, []) }); });
     }
     return out;
   },
   // Runs every relationship whose base is `baseTableName` against it in sequence, and returns the
   // merged row set (App.columns is derived from the merged rows' keys afterward, same as loadSheet()).
+  // Only BLOCKING validation problems (missing table/column, incompatible types) skip a relationship
+  // entirely — data-quality issues (blank keys, duplicate keys, no overlap) are surfaced as warnings
+  // but the join still runs, so a handful of messy rows can never silently disable an entire join.
   run(baseTableName, relationships){
     const base = App.sheetTables[baseTableName];
-    if (!base) return { rows: [], errors: [`"${baseTableName}" is not a loaded sheet.`] };
+    if (!base) return { rows: [], errors: [`"${baseTableName}" is not a loaded sheet.`], warnings: [] };
     let rows = base.rows.map(r => ({ ...r }));
-    const errors = [];
+    const errors = [], warnings = [];
     relationships.filter(r => r.base === baseTableName).forEach(rel => {
-      const relErrors = RelationshipMgr.validate(rel);
+      const { errors: relErrors, warnings: relWarnings } = RelationshipMgr.validate(rel);
       if (relErrors.length){ errors.push(`${rel.base} → ${rel.other}: ${relErrors[0]}`); return; }
+      relWarnings.forEach(w => warnings.push(`${rel.base} → ${rel.other}: ${w}`));
       const other = App.sheetTables[rel.other];
       rows = JoinEngine.joinTwo(rows, rel.baseKeys, other.rows, rel.otherKeys, other.columns, rel.type);
     });
-    return { rows, errors };
+    return { rows, errors, warnings };
   }
 };
+
 
 /* ================================================================
    CALCULATED FIELDS — Calculated Columns (row-level, e.g. Revenue = Qty * Price) and Measures
@@ -1966,7 +2159,11 @@ const KpiMgr = {
   },
   renderCards(){
     const row = document.getElementById('kpi-row');
-    if (!App.kpis.length){ row.innerHTML = '<div class="empty-state w-100"><i class="fa-solid fa-gauge-high"></i>No KPI cards yet. Build one from the KPI tab.</div>'; return; }
+    if (!App.kpis.length){
+      row.innerHTML = '<div class="empty-state w-100"><i class="fa-solid fa-gauge-high"></i>No KPI cards yet. Build one from the KPI tab.</div>';
+      if (typeof LayoutMgr !== "undefined") LayoutMgr.autoFitKpis();
+      return;
+    }
     const filtered = DataMgr.getFiltered();
     row.innerHTML = App.kpis.map(k => {
       const val = Utils.aggregateNumeric(filtered, k.column, k.agg);
@@ -1977,13 +2174,16 @@ const KpiMgr = {
       const compareHtml = k.showCompare ? `<div class="kpi-compare">vs total: ${Utils.formatValue(baseline, k.format)}</div>` : '';
       const iconHtml = k.showIcon ? `<div class="kpi-icon"><i class="${k.icon}"></i></div>` : '';
       return `
-      <div class="kpi-card" style="--kpi-color:${k.color}; width:${k.width}; border-radius:${k.radius}; ${k.shadow?'':'box-shadow:none;'}">
+      <div class="kpi-card" style="--kpi-color:${k.color}; max-width:${k.width}; border-radius:${k.radius}; ${k.shadow?'':'box-shadow:none;'}">
         <button class="kpi-edit-btn no-print" onclick="KpiMgr.startEdit('${k.id}')" title="Edit this KPI card"><i class="fa-solid fa-pen"></i></button>
         <div class="kpi-top"><span class="kpi-name">${Utils.esc(k.name)}</span>${iconHtml}</div>
         <div class="kpi-value" style="font-size:${k.fontSize}">${Utils.formatValue(val, k.format)}</div>
         ${trendHtml}${compareHtml}
       </div>`;
     }).join('');
+    // Resize the widget to fit immediately (don't wait on the debounced ResizeObserver) so newly
+    // added/edited cards are never briefly clipped or overlapping the row below.
+    if (typeof LayoutMgr !== "undefined") LayoutMgr.autoFitKpis();
   },
   buildColorRow(){
     const row = document.getElementById('kpi-color-row');
@@ -2018,7 +2218,7 @@ const KpiMgr = {
 const FilterMgr = {
   addFilter(cfg){
     App.filters.push(cfg);
-    App.filterValues[cfg.id] = (cfg.type === 'multiselect' || cfg.type === 'checkbox') ? [] : (cfg.type === 'daterange' || cfg.type === 'numberrange') ? {} : '';
+    App.filterValues[cfg.id] = (cfg.type === 'multiselect' || cfg.type === 'checkbox' || cfg.type === 'monthcombo') ? [] : (cfg.type === 'daterange' || cfg.type === 'numberrange') ? {} : '';
     FilterMgr.renderList(); FilterMgr.renderBar();
   },
   removeFilter(id){
@@ -2029,9 +2229,10 @@ const FilterMgr = {
   },
   clearAll(){
     App.filters.forEach(f => {
-      App.filterValues[f.id] = (f.type === 'multiselect' || f.type === 'checkbox') ? [] : (f.type === 'daterange' || f.type === 'numberrange') ? {} : '';
+      App.filterValues[f.id] = (f.type === 'multiselect' || f.type === 'checkbox' || f.type === 'monthcombo') ? [] : (f.type === 'daterange' || f.type === 'numberrange') ? {} : '';
     });
-    App.filteredCache = null; FilterMgr.renderBar(); UI.refreshAll();
+    App.crossFilter = null;
+    App.filteredCache = null; FilterMgr.renderBar(); UI.refreshAll(); UI.renderCrossFilterIndicator();
   },
   renderList(){
     const el = document.getElementById('filter-list');
@@ -2071,12 +2272,19 @@ const FilterMgr = {
   },
   renderBar(){
     const bar = document.getElementById('filter-bar');
-    if (!App.filters.length){ bar.innerHTML = '<div class="empty-state py-2"><i class="fa-solid fa-filter"></i>No filters yet. Add one from the Filters tab.</div>'; return; }
+    if (!App.filters.length){
+      bar.innerHTML = '<div class="empty-state py-2"><i class="fa-solid fa-filter"></i>No filters yet. Add one from the Filters tab.</div>';
+      if (typeof LayoutMgr !== "undefined") LayoutMgr.autoFitFilters();
+      return;
+    }
     const focusedId = FilterMgr.getFocusedFilterId();
     const keep = focusedId ? bar.querySelector(`.filter-ctrl[data-fid="${focusedId}"]`) : null;
     const frag = document.createDocumentFragment();
     App.filters.forEach(f => frag.appendChild(f.id === focusedId && keep ? keep : FilterMgr.buildControl(f)));
     bar.innerHTML = ''; bar.appendChild(frag);
+    // Resize the widget to fit immediately (don't wait on the debounced ResizeObserver) so a
+    // newly-added filter row is never briefly clipped or overlapped by the widget below it.
+    if (typeof LayoutMgr !== "undefined") LayoutMgr.autoFitFilters();
   },
   buildControl(f){
     const wrap = document.createElement('div'); wrap.className = 'filter-ctrl'; wrap.dataset.fid = f.id;
@@ -2084,8 +2292,8 @@ const FilterMgr = {
     const values = DataMgr.distinctValuesFiltered(f.column, f.id);
     const valueStrs = values.map(String);
     const debouncedChange = Utils.debounce(() => FilterMgr.onChange(), 250);
-    const monthValues = f.type === 'month' ? DataMgr.distinctMonthsFiltered(f.column, f.id) : null;
-    const yearValues = f.type === 'year' ? DataMgr.distinctYearsFiltered(f.column, f.id) : null;
+    const monthValues = (f.type === 'month' || f.type === 'monthcombo') ? DataMgr.distinctMonthsFiltered(f.column, f.id) : null;
+    const yearValues = f.type === 'year' ? DataMgr.distinctFYYearsFiltered(f.column, f.id) : null;
 
     switch(f.type){
       case 'dropdown': case 'radio': {
@@ -2100,12 +2308,20 @@ const FilterMgr = {
       }
       case 'year': {
         const cur = App.filterValues[f.id];
-        if (cur !== '' && cur !== undefined && !yearValues.map(String).includes(String(cur))){ App.filterValues[f.id] = ''; App.filteredCache = null; }
+        const fyLabels = yearValues.map(y => Utils.fyLabel(y));
+        if (cur !== '' && cur !== undefined && !fyLabels.includes(String(cur))){ App.filterValues[f.id] = ''; App.filteredCache = null; }
         break;
       }
       case 'multiselect': case 'checkbox': {
         const arr = App.filterValues[f.id] || [];
         const kept = arr.filter(v => valueStrs.includes(String(v)));
+        if (kept.length !== arr.length){ App.filterValues[f.id] = kept; App.filteredCache = null; }
+        break;
+      }
+      case 'monthcombo': {
+        const arr = App.filterValues[f.id] || [];
+        const monthStrs = monthValues.map(String);
+        const kept = arr.filter(v => monthStrs.includes(String(v)));
         if (kept.length !== arr.length){ App.filterValues[f.id] = kept; App.filteredCache = null; }
         break;
       }
@@ -2172,19 +2388,41 @@ const FilterMgr = {
       }
       case 'month': {
         const sel = document.createElement('select'); sel.className = 'form-select form-select-sm';
-        const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-        sel.innerHTML = '<option value="">All</option>' + monthValues.map(i => `<option value="${i}">${months[i-1]}</option>`).join('');
+        sel.innerHTML = '<option value="">All</option>' + monthValues.map(i => `<option value="${i}">${Utils.FY_MONTH_ABBR[i]}</option>`).join('');
         sel.value = App.filterValues[f.id] || '';
         sel.addEventListener('change', () => { App.filterValues[f.id] = sel.value; FilterMgr.onChange(); });
         wrap.appendChild(sel);
         break;
       }
+      case 'monthcombo': {
+        const box = document.createElement('div'); box.className = 'filter-chip-group';
+        box.innerHTML = monthValues.map(i => `<span class="filter-chip" data-v="${i}">${Utils.FY_MONTH_ABBR[i]}</span>`).join('');
+        box.querySelectorAll('.filter-chip').forEach(chip => {
+          const arr = App.filterValues[f.id] || [];
+          if (arr.map(String).includes(chip.dataset.v)) chip.classList.add('active');
+          chip.addEventListener('click', () => {
+            let arr = (App.filterValues[f.id] || []).map(String);
+            if (arr.includes(chip.dataset.v)){ arr = arr.filter(x => x !== chip.dataset.v); chip.classList.remove('active'); }
+            else { arr.push(chip.dataset.v); chip.classList.add('active'); }
+            App.filterValues[f.id] = arr; FilterMgr.onChange();
+          });
+        });
+        wrap.appendChild(box);
+        break;
+      }
       case 'year': {
         const sel = document.createElement('select'); sel.className = 'form-select form-select-sm';
-        sel.innerHTML = '<option value="">All</option>' + yearValues.map(y => `<option value="${y}">${y}</option>`).join('');
+        sel.innerHTML = '<option value="">All</option>' + yearValues.map(y => `<option value="${Utils.fyLabel(y)}">FY ${Utils.fyLabel(y)}</option>`).join('');
         sel.value = App.filterValues[f.id] || '';
         sel.addEventListener('change', () => { App.filterValues[f.id] = sel.value; FilterMgr.onChange(); });
         wrap.appendChild(sel);
+        break;
+      }
+      case 'asondate': {
+        const inp = document.createElement('input'); inp.type = 'date'; inp.className = 'form-control form-control-sm';
+        inp.value = App.filterValues[f.id] || '';
+        inp.addEventListener('change', () => { App.filterValues[f.id] = inp.value; FilterMgr.onChange(); });
+        wrap.appendChild(inp);
         break;
       }
       case 'numberrange': {
@@ -2231,6 +2469,7 @@ const TableMgr = {
     document.getElementById('table-name').value = t.name;
     document.getElementById('table-footer-calc').value = t.footerCalc;
     document.getElementById('table-numfmt').value = t.numFmt || 'none';
+    document.getElementById('table-dateagg').value = t.dateAgg || 'none';
     document.getElementById('table-sort').checked = t.sort;
     document.getElementById('table-search').checked = t.search;
     document.getElementById('table-page').checked = t.page;
@@ -2240,12 +2479,14 @@ const TableMgr = {
       if (chip) picker.appendChild(chip);
     });
     picker.querySelectorAll('.filter-chip').forEach(chip => chip.classList.toggle('active', t.columns.includes(chip.dataset.c)));
+    UI.applyTableDateAggVisibility();
     UI.switchSidebarTab('pane-table');
     document.querySelector('#table-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-check"></i> Update Table';
   },
   cancelEdit(){
     App.editId.table = null; document.getElementById('table-form').reset();
     document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active'));
+    UI.applyTableDateAggVisibility();
     document.querySelector('#table-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-plus"></i> Add Table';
   },
   renderTable(id){
@@ -2270,12 +2511,18 @@ const TableMgr = {
     if (App.tableInstances[id]) { App.tableInstances[id].destroy(); }
 
     const numFmt = cfg.numFmt && cfg.numFmt !== 'none' ? cfg.numFmt : null;
+    const dateFmt = cfg.dateAgg && cfg.dateAgg !== 'none' ? cfg.dateAgg : null;
     const columns = cfg.columns.map(c => {
       const isNum = App.columnTypes[c] === 'number';
+      const isDate = App.columnTypes[c] === 'date';
       return {
         title: c, data: c,
         render: (data, type) => {
           if (type !== 'display') return data;
+          if (isDate){
+            const d = Utils.toDate(data);
+            if (d) return dateFmt ? Utils.dateAggLabel(d, dateFmt) : d.toLocaleDateString();
+          }
           if (isNum && numFmt) return Utils.formatValue(data, numFmt);
           if (data instanceof Date) return data.toLocaleDateString();
           return data;
@@ -2341,7 +2588,14 @@ const TableMgr = {
       });
     });
   },
-  rowsToAOA(cfg, rows){ return [cfg.columns, ...rows.map(r => cfg.columns.map(c => r[c] instanceof Date ? r[c].toLocaleDateString() : r[c]))]; },
+  rowsToAOA(cfg, rows){
+    const dateFmt = cfg.dateAgg && cfg.dateAgg !== 'none' ? cfg.dateAgg : null;
+    return [cfg.columns, ...rows.map(r => cfg.columns.map(c => {
+      const v = r[c];
+      if (App.columnTypes[c] === 'date'){ const d = Utils.toDate(v); if (d) return dateFmt ? Utils.dateAggLabel(d, dateFmt) : d.toLocaleDateString(); }
+      return v instanceof Date ? v.toLocaleDateString() : v;
+    }))];
+  },
   exportCsv(cfg, rows){
     const aoa = TableMgr.rowsToAOA(cfg, rows);
     const csv = aoa.map(r => r.map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -2396,6 +2650,7 @@ const ChartMgr = {
     document.getElementById('chart-bins').value = c.bins ?? '';
     document.getElementById('chart-group').value = c.group || '';
     document.getElementById('chart-agg').value = c.agg;
+    document.getElementById('chart-dateagg').value = ({ none:'day', quarter:'month', monthyear:'year' })[c.dateAgg] || c.dateAgg || 'day';
     document.getElementById('chart-legend').checked = c.legend;
     document.getElementById('chart-datalabels').checked = c.datalabels;
     document.getElementById('chart-tooltip').checked = c.tooltip;
@@ -2405,11 +2660,12 @@ const ChartMgr = {
     document.getElementById('chart-multicolor').checked = !!c.multiColor;
     UI.populateChartXOrderPicker(c.xOrder || []);
     UI.applyChartTypeFieldVisibility();
+    UI.applyChartDateAggVisibility();
     UI.switchSidebarTab('pane-chart');
     document.querySelector('#chart-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-check"></i> Update Chart';
   },
   cancelEdit(){
-    App.editId.chart = null; document.getElementById('chart-form').reset(); UI.populateChartXOrderPicker(); UI.applyChartTypeFieldVisibility();
+    App.editId.chart = null; document.getElementById('chart-form').reset(); UI.populateChartXOrderPicker(); UI.applyChartTypeFieldVisibility(); UI.applyChartDateAggVisibility();
     document.querySelector('#chart-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-plus"></i> Add Chart';
   },
   // Per-type descriptor table — the single source of truth every new chart type plugs into, so
@@ -2451,11 +2707,24 @@ const ChartMgr = {
     gauge:      { jsType:'doughnut', family:'gauge', singleValue:true },
     bullet:     { jsType:'bar', family:'bullet', singleValue:true, needsTarget:true, indexAxis:'y' }
   },
-  aggregate(rows, xCol, yCol, groupCol, agg, xOrder){
+  aggregate(rows, xCol, yCol, groupCol, agg, xOrder, dateAgg){
     const groups = groupCol ? Array.from(new Set(rows.map(r => r[groupCol]))).sort() : [null];
+    // When X is a date-type column and a Date Format was picked, bucket rows by the formatted
+    // label (Day/Month/Quarter/Year/Month & Year) instead of by the raw date value.
+    const useDateAgg = App.columnTypes[xCol] === 'date' && dateAgg && dateAgg !== 'none';
+    const xLabel = (v) => {
+      if (useDateAgg){ const d = Utils.toDate(v); return d ? Utils.dateAggLabel(d, dateAgg) : String(v ?? ''); }
+      return v instanceof Date ? v.toLocaleDateString() : v;
+    };
     const xValsSet = new Set();
-    rows.forEach(r => xValsSet.add(r[xCol] instanceof Date ? r[xCol].toLocaleDateString() : r[xCol]));
-    let labels = Array.from(xValsSet).sort();
+    const sortKeyMap = new Map();
+    rows.forEach(r => {
+      const xv = xLabel(r[xCol]);
+      xValsSet.add(xv);
+      if (useDateAgg && !sortKeyMap.has(xv)){ const d = Utils.toDate(r[xCol]); sortKeyMap.set(xv, d ? Utils.dateAggSortKey(d, dateAgg) : 0); }
+    });
+    let labels = Array.from(xValsSet);
+    labels.sort(useDateAgg ? (a,b) => sortKeyMap.get(a) - sortKeyMap.get(b) : undefined);
     if (xOrder && xOrder.length){
       const orderIndex = new Map(xOrder.map((v,i) => [String(v), i]));
       labels = labels.slice().sort((a,b) => {
@@ -2468,7 +2737,7 @@ const ChartMgr = {
       const bucket = {}; labels.forEach(l => bucket[l] = []);
       rows.forEach(r => {
         if (groupCol && r[groupCol] !== g) return;
-        const xv = r[xCol] instanceof Date ? r[xCol].toLocaleDateString() : r[xCol];
+        const xv = xLabel(r[xCol]);
         if (bucket[xv]) bucket[xv].push(r);
       });
       const data = labels.map(l => {
@@ -2482,9 +2751,9 @@ const ChartMgr = {
   },
   // Range family (Range Bar / Range Area): same bucketing as aggregate(), run twice — once for the
   // Min field, once for the Max field — then zipped into [min,max] pairs per point.
-  aggregateRange(rows, xCol, yMinCol, yMaxCol, groupCol, agg, xOrder){
-    const minAgg = ChartMgr.aggregate(rows, xCol, yMinCol, groupCol, agg, xOrder);
-    const maxAgg = ChartMgr.aggregate(rows, xCol, yMaxCol || yMinCol, groupCol, agg, xOrder);
+  aggregateRange(rows, xCol, yMinCol, yMaxCol, groupCol, agg, xOrder, dateAgg){
+    const minAgg = ChartMgr.aggregate(rows, xCol, yMinCol, groupCol, agg, xOrder, dateAgg);
+    const maxAgg = ChartMgr.aggregate(rows, xCol, yMaxCol || yMinCol, groupCol, agg, xOrder, dateAgg);
     const series = minAgg.series.map((s, i) => ({
       name: s.name,
       data: s.data.map((v, li) => [v, (maxAgg.series[i] && maxAgg.series[i].data[li] !== undefined) ? maxAgg.series[i].data[li] : v])
@@ -2495,14 +2764,12 @@ const ChartMgr = {
   // each bin — the one type here that doesn't bucket by a categorical X value.
   buildHistogram(rows, xCol, yCol, agg, binsCount){
     const nums = rows.map(r => Number(r[xCol])).filter(v => !isNaN(v));
-    if (!nums.length) return { labels: [], series: [{ name: yCol || 'Count', data: [] }] };
+    if (!nums.length) return { labels: [], series: [{ name: yCol || 'Count', data: [] }], bounds: [] };
     const min = Math.min(...nums), max = Math.max(...nums);
     const bins = (binsCount && binsCount >= 2) ? binsCount : Math.max(5, Math.min(20, Math.ceil(Math.sqrt(nums.length))));
     const width = (max - min) / bins || 1;
-    const labels = Array.from({ length: bins }, (_, i) => {
-      const lo = min + i * width, hi = i === bins - 1 ? max : min + (i + 1) * width;
-      return `${Utils.formatValue(lo, 'decimal')}–${Utils.formatValue(hi, 'decimal')}`;
-    });
+    const bounds = Array.from({ length: bins }, (_, i) => ({ lo: min + i * width, hi: i === bins - 1 ? max : min + (i + 1) * width, last: i === bins - 1 }));
+    const labels = bounds.map(b => `${Utils.formatValue(b.lo, 'decimal')}–${Utils.formatValue(b.hi, 'decimal')}`);
     const buckets = Array.from({ length: bins }, () => []);
     rows.forEach(r => {
       const v = Number(r[xCol]); if (isNaN(v)) return;
@@ -2510,12 +2777,12 @@ const ChartMgr = {
       buckets[idx].push(r);
     });
     const data = buckets.map(subset => (agg === 'count' || !yCol) ? subset.length : Utils.aggregateNumeric(subset, yCol, agg));
-    return { labels, series: [{ name: yCol || 'Count', data }] };
+    return { labels, series: [{ name: yCol || 'Count', data }], bounds };
   },
   // Pareto: aggregated bars sorted descending (or by Custom X-Axis Order if one was set) plus a
   // cumulative-percentage line on a secondary 0–100% axis.
-  buildPareto(rows, xCol, yCol, agg, xOrder){
-    const base = ChartMgr.aggregate(rows, xCol, yCol, null, agg, null);
+  buildPareto(rows, xCol, yCol, agg, xOrder, dateAgg){
+    const base = ChartMgr.aggregate(rows, xCol, yCol, null, agg, null, dateAgg);
     let pairs = base.labels.map((l, i) => ({ l, v: base.series[0].data[i] || 0 }));
     if (xOrder && xOrder.length){
       const orderIndex = new Map(xOrder.map((v,i) => [String(v), i]));
@@ -2530,8 +2797,8 @@ const ChartMgr = {
   },
   // Waterfall: aggregated values converted into a running [start,end] pair per bar so Chart.js's
   // native floating-bar support draws the familiar bridge/step look, with rises/falls colour-coded.
-  buildWaterfall(rows, xCol, yCol, agg, xOrder){
-    const base = ChartMgr.aggregate(rows, xCol, yCol, null, agg, xOrder);
+  buildWaterfall(rows, xCol, yCol, agg, xOrder, dateAgg){
+    const base = ChartMgr.aggregate(rows, xCol, yCol, null, agg, xOrder, dateAgg);
     const values = base.series[0] ? base.series[0].data : [];
     let running = 0;
     const data = values.map(v => { const start = running; running += (v || 0); return [Math.min(start, running), Math.max(start, running)]; });
@@ -2546,7 +2813,7 @@ const ChartMgr = {
       const data = subset.map(r => {
         const x = Number(r[xCol]), y = Number(r[yCol]);
         if (isNaN(x) || isNaN(y)) return null;
-        const pt = { x, y };
+        const pt = { x, y, _rawX: r[xCol] };
         if (needsSize && sizeCol){ const rv = Number(r[sizeCol]); pt.r = isNaN(rv) ? 6 : Math.max(3, Math.min(30, rv)); }
         return pt;
       }).filter(Boolean);
@@ -2606,12 +2873,12 @@ const ChartMgr = {
     const isCombo = meta.family === 'combo';
     const isMixedAxis = meta.family === 'mixedaxis';
 
-    let labels, series;
-    if (isRangeFamily) ({ labels, series } = ChartMgr.aggregateRange(filtered, cfg.x, cfg.y, cfg.yMax, cfg.group, cfg.agg, cfg.xOrder));
-    else if (isBinned) ({ labels, series } = ChartMgr.buildHistogram(filtered, cfg.x, cfg.y, cfg.agg, cfg.bins));
-    else if (isPareto) ({ labels, series } = ChartMgr.buildPareto(filtered, cfg.x, cfg.y, cfg.agg, cfg.xOrder));
-    else if (isWaterfall) ({ labels, series } = ChartMgr.buildWaterfall(filtered, cfg.x, cfg.y, cfg.agg, cfg.xOrder));
-    else ({ labels, series } = ChartMgr.aggregate(filtered, cfg.x, cfg.y, cfg.group, cfg.agg, cfg.xOrder));
+    let labels, series, bounds;
+    if (isRangeFamily) ({ labels, series } = ChartMgr.aggregateRange(filtered, cfg.x, cfg.y, cfg.yMax, cfg.group, cfg.agg, cfg.xOrder, cfg.dateAgg));
+    else if (isBinned) ({ labels, series, bounds } = ChartMgr.buildHistogram(filtered, cfg.x, cfg.y, cfg.agg, cfg.bins));
+    else if (isPareto) ({ labels, series } = ChartMgr.buildPareto(filtered, cfg.x, cfg.y, cfg.agg, cfg.xOrder, cfg.dateAgg));
+    else if (isWaterfall) ({ labels, series } = ChartMgr.buildWaterfall(filtered, cfg.x, cfg.y, cfg.agg, cfg.xOrder, cfg.dateAgg));
+    else ({ labels, series } = ChartMgr.aggregate(filtered, cfg.x, cfg.y, cfg.group, cfg.agg, cfg.xOrder, cfg.dateAgg));
 
     const isLineFamily = meta.jsType === 'line';
     const isAreaFill = !!meta.fill;
@@ -2691,7 +2958,8 @@ const ChartMgr = {
           if (pts && pts.length) idx = pts[0].index;
         }
         if (idx === null || idx === undefined || !labels[idx]) return;
-        ChartMgr.toggleCrossFilter(cfg, labels[idx]);
+        if (isBinned && bounds && bounds[idx]) ChartMgr.toggleCrossFilter(cfg, labels[idx], bounds[idx]);
+        else ChartMgr.toggleCrossFilter(cfg, labels[idx]);
       },
       scales
     });
@@ -2705,18 +2973,28 @@ const ChartMgr = {
       type: meta.jsType, data: { labels, datasets }, options, plugins: cfg.datalabels ? [ChartMgr.dataLabelPlugin] : []
     });
   },
-  // Point family: Scatter / Bubble. Both axes are continuous, so there's no discrete label to
-  // cross-filter by — these charts still fully respect filters/cross-filters set by other widgets,
-  // they just don't originate one on click (there's no single category a click maps back to).
+  // Point family: Scatter / Bubble. Clicking a point cross-filters by that point's original X
+  // value, through the exact same App.crossFilter / toggleCrossFilter mechanism every other chart
+  // uses — no separate interaction system. A second click on the same point clears it.
   renderXY(id, cfg, canvas, filtered, meta){
     const series = ChartMgr.buildPoints(filtered, cfg.x, cfg.y, cfg.size, cfg.group, meta.needsSize);
+    const cfActive = App.crossFilter && App.crossFilter.column === cfg.x;
+    const dim = (hex, rawX) => (cfActive && String(rawX) !== String(App.crossFilter.value)) ? hex + '33' : hex;
     const datasets = series.map((s,i) => ({
       label: s.name, data: s.data,
-      backgroundColor: Utils.colorFor(i) + (meta.jsType === 'bubble' ? '77' : ''),
-      borderColor: Utils.colorFor(i), borderWidth: 1
+      backgroundColor: s.data.map(p => dim(Utils.colorFor(i), p._rawX) + (meta.jsType === 'bubble' ? '77' : '')),
+      borderColor: s.data.map(p => dim(Utils.colorFor(i), p._rawX)), borderWidth: 1
     }));
     const slate = getComputedStyle(document.body).getPropertyValue('--slate');
     const options = ChartMgr.baseOptions(cfg, {
+      onClick: (evt, elements, chart) => {
+        let el = elements && elements.length ? elements[0] : null;
+        if (!el){ const pts = chart.getElementsAtEventForMode(evt, 'nearest', { intersect: false }, true); if (pts && pts.length) el = pts[0]; }
+        if (!el) return;
+        const pt = chart.data.datasets[el.datasetIndex] && chart.data.datasets[el.datasetIndex].data[el.index];
+        if (!pt || pt._rawX === undefined || pt._rawX === null) return;
+        ChartMgr.toggleCrossFilter(cfg, pt._rawX);
+      },
       scales: {
         x: { grid:{ display:cfg.grid }, ticks:{ color: slate }, title:{ display:true, text:cfg.x, color: slate } },
         y: { grid:{ display:cfg.grid }, ticks:{ color: slate }, title:{ display:true, text:cfg.y, color: slate } }
@@ -2808,10 +3086,10 @@ const ChartMgr = {
     }
   },
   refreshAll(){ App.charts.forEach(c => ChartMgr.renderChart(c.id)); },
-  toggleCrossFilter(cfg, rawLabel){
+  toggleCrossFilter(cfg, rawLabel, range){
     const value = String(rawLabel); const cur = App.crossFilter;
-    if (cur && cur.column === cfg.x && cur.value === value){ App.crossFilter = null; } 
-    else { App.crossFilter = { column: cfg.x, value, chartId: cfg.id }; }
+    if (cur && cur.column === cfg.x && cur.value === value){ App.crossFilter = null; }
+    else { App.crossFilter = { column: cfg.x, value, chartId: cfg.id, range: range || null }; }
     App.filteredCache = null; FilterMgr.renderBar(); UI.refreshAll(); UI.renderCrossFilterIndicator();
   },
   clearCrossFilter(){
@@ -2893,19 +3171,28 @@ const LayoutMgr = {
 
   // Grows (never shrinks below content) the Filters widget so its chip rows aren't clipped,
   // then resolves any resulting overlap with widgets below it.
+  //
+  // Both #widget-filters and #widget-kpis are forced to height:auto !important in CSS (so the
+  // grid inside can size every row to its tallest control with nothing clipped) — the JS-tracked
+  // g.h here is used only to tell OTHER widgets how far down to sit. Those two numbers used to be
+  // computed two different ways (CSS auto-sizing the box for real, this function estimating it
+  // from headH + scrollHeight + a hard-coded padding constant), and the estimate could drift from
+  // the true rendered height — wrong at any viewport where widget-body padding isn't the desktop
+  // 1rem this formula assumed, and by any rounding/border-width the formula didn't account for.
+  // When the estimate came in low, g.h under-reported the box's real height, so the widget below
+  // wasn't pushed down far enough and visually overlapped/clipped it — exactly the "filters row
+  // not fully visible, KPI cards stuck together" symptom. Reading the actual rendered height
+  // directly (getBoundingClientRect, which forces a synchronous layout) instead of estimating it
+  // makes g.h always match what's really on screen, so it can't drift out of sync.
   autoFitFilters(){
     if (!App.layout || !App.layout.filters) return;
     if (LayoutMgr.canvas && LayoutMgr.canvas.classList.contains('stacked-mode')) return;
     const wrap = document.getElementById('widget-filters');
-    const bar = document.getElementById('filter-bar');
-    if (!wrap || !bar) return;
+    if (!wrap) return;
     const g = App.layout.filters;
-    const head = wrap.querySelector('.widget-head');
-    const headH = head ? head.offsetHeight : 0;
-    const bodyPad = 32; // .widget-body top+bottom padding (1rem each)
-    const needed = Math.ceil(headH + bar.scrollHeight + bodyPad);
+    const actual = Math.ceil(wrap.getBoundingClientRect().height);
     const d = LayoutMgr.DEFAULTS.filters;
-    const targetH = Math.min(d.maxH, Math.max(d.minH, needed));
+    const targetH = Math.min(d.maxH, Math.max(d.minH, actual));
     if (targetH > g.h){
       g.h = targetH;
       LayoutMgr.applyGeom('filters');
@@ -2917,20 +3204,17 @@ const LayoutMgr = {
   // content) whenever KPI cards are added/removed or wrap onto another row, so cards never get
   // clipped, pushed under the title bar, or hidden behind an internal scrollbar. Also shrinks
   // back down if cards are removed and the content genuinely got shorter, so the container always
-  // tracks its real content height instead of only ever growing.
+  // tracks its real content height instead of only ever growing. See autoFitFilters above for why
+  // this measures the real rendered box instead of estimating it.
   autoFitKpis(){
     if (!App.layout || !App.layout.kpis) return;
     if (LayoutMgr.canvas && LayoutMgr.canvas.classList.contains('stacked-mode')) return;
     const wrap = document.getElementById('widget-kpis');
-    const row = document.getElementById('kpi-row');
-    if (!wrap || !row) return;
+    if (!wrap) return;
     const g = App.layout.kpis;
-    const head = wrap.querySelector('.widget-head');
-    const headH = head ? head.offsetHeight : 0;
-    const bodyPad = 32; // .widget-body top+bottom padding (1rem each)
-    const needed = Math.ceil(headH + row.scrollHeight + bodyPad);
+    const actual = Math.ceil(wrap.getBoundingClientRect().height);
     const d = LayoutMgr.DEFAULTS.kpis;
-    const targetH = Math.min(d.maxH, Math.max(d.minH, needed));
+    const targetH = Math.min(d.maxH, Math.max(d.minH, actual));
     if (targetH !== g.h){
       g.h = targetH;
       LayoutMgr.applyGeom('kpis');
@@ -3078,9 +3362,11 @@ const LayoutMgr = {
       const g = App.layout[el.dataset.wid]; if (!g || g.visible === false) return;
       maxY = Math.max(maxY, g.y + g.h); maxX = Math.max(maxX, g.x + g.w);
     });
+    // +16 compensates for #dashboard-canvas's own padding (border-box sizing subtracts it from
+    // the height/width we set), so widgets keep the same breathing room below/right as before.
     if (!LayoutMgr.canvas.classList.contains('stacked-mode')){
-      LayoutMgr.canvas.style.height = (maxY + 60) + 'px';
-      LayoutMgr.canvas.style.minWidth = (maxX + 40) + 'px';
+      LayoutMgr.canvas.style.height = (maxY + 60 + 16) + 'px';
+      LayoutMgr.canvas.style.minWidth = (maxX + 40 + 16) + 'px';
     }
   },
 
@@ -3160,9 +3446,18 @@ const LayoutMgr = {
   // follows each widget's z so the visual stacking order carries over) with no overlap possible.
   applyResponsive(){
     const stacked = window.innerWidth <= LayoutMgr.STACK_BREAKPOINT;
+    const wasStacked = LayoutMgr.canvas.classList.contains('stacked-mode');
     LayoutMgr.canvas.classList.toggle('stacked-mode', stacked);
     if (stacked) LayoutMgr.canvas.style.height = 'auto';
-    else LayoutMgr.updateCanvasBounds();
+    else {
+      // Coming back from stacked mode: filters/KPI cards may have changed count while
+      // auto-fit was skipped (it's a no-op in stacked mode, since layout is static there).
+      // Recompute their real heights now so Key Metrics can't reopen on desktop overlapping
+      // a Filters row that grew while the dashboard was narrow.
+      if (wasStacked){ LayoutMgr.autoFitFilters(); LayoutMgr.autoFitKpis(); }
+      LayoutMgr.resolveOverlaps();
+      LayoutMgr.updateCanvasBounds();
+    }
   }
 };
 
@@ -3216,7 +3511,11 @@ const PageMgr = {
       // have to paste the same link again — you can still change it per page from the Data tab.
       dataSource: hasDefault ? { type: 'gsheet', gsheetUrl: def.defaultGsheetUrl.trim(), gsheetName: def.defaultGsheetTab || null, gid: null } : { type: null, gsheetUrl: null, gsheetName: null, gid: null },
       autoRefreshInterval: def.defaultAutoRefresh || 0,
-      data: [], columns: [], columnTypes: {}, sheetNames: [], fileName: null, uploadDate: null
+      data: [], columns: [], columnTypes: {}, sheetNames: [], fileName: null, uploadDate: null,
+      // The full multi-sheet data-source configuration (spec: "which sheets/tabs are used, how the
+      // data is modelled, how each source maps into the dashboard") — NOT a data snapshot. This is
+      // what lets a saved/shared dashboard rebuild its Sheet1..Sheet5 join every time it refreshes.
+      selectedSheets: [], relationships: [], calcFields: [], gsheetMeta: { id: null, kind: null, gid: null }
     };
   },
   init(){ if (!App.pages.length){ App.pages = [{ id: App.currentPageId, name: 'Dashboard 1', state: null }]; } PageMgr.renderTabs(); },
@@ -3226,6 +3525,13 @@ const PageMgr = {
       kpis: App.kpis, filters: App.filters, filterValues: App.filterValues, tables: App.tables, charts: App.charts, textboxes: App.textboxes,
       layoutOrder: App.layoutOrder, layout: App.layout, title: App.title,
       dataSource: App.dataSource, autoRefreshInterval: App.autoRefreshInterval,
+      // Data-source CONFIGURATION (spec item — persisted, not a data snapshot): which tabs are
+      // selected, how they're joined, any calculated fields, and the parsed identity of the
+      // connected sheet. This is what a shared link needs to rebuild the exact same data model.
+      selectedSheets: App.selectedSheets, relationships: App.relationships, calcFields: App.calcFields, gsheetMeta: App.gsheetMeta,
+      // Cached rows (spec: fine to keep as a cache, per ch7/ch8 — this is only used to paint the
+      // dashboard instantly before the live re-fetch/re-join above replaces it; it is never the
+      // source of truth once a Google Sheet source is connected).
       data: App.data, columns: App.columns, columnTypes: App.columnTypes, sheetNames: App.sheetNames, fileName: App.fileName, uploadDate: App.uploadDate
     }));
   },
@@ -3234,6 +3540,8 @@ const PageMgr = {
     App.textboxes = state.textboxes || []; App.layoutOrder = state.layoutOrder || []; App.layout = state.layout || {}; App.title = state.title || PageMgr.blankState().title;
     App.dataSource = state.dataSource || { type: null, gsheetUrl: null, gsheetName: null, gid: null };
     App.autoRefreshInterval = state.autoRefreshInterval || 0;
+    App.selectedSheets = state.selectedSheets || []; App.relationships = state.relationships || []; App.calcFields = state.calcFields || [];
+    App.gsheetMeta = state.gsheetMeta || { id: null, kind: null, gid: null };
     App.data = state.data || []; App.columns = state.columns || []; App.columnTypes = state.columnTypes || {};
     App.sheetNames = state.sheetNames || []; App.fileName = state.fileName || null; App.uploadDate = state.uploadDate ? new Date(state.uploadDate) : null;
     App.filteredCache = null; App.workbookRef = null;
@@ -3438,7 +3746,10 @@ const ShareMgr = {
       title: App.title, layoutOrder: App.layoutOrder, layout: App.layout,
       columns: App.columns, columnTypes: App.columnTypes, fileName: App.fileName, uploadDate: App.uploadDate,
       pages: App.pages, currentPageId: App.currentPageId,
-      dataSource: App.dataSource, autoRefreshInterval: App.autoRefreshInterval
+      dataSource: App.dataSource, autoRefreshInterval: App.autoRefreshInterval,
+      // Multi-sheet data-source configuration (which tabs, how they're joined, calculated fields) —
+      // needed so this self-contained fallback link rebuilds the same data model as the cloud path.
+      selectedSheets: App.selectedSheets, relationships: App.relationships, calcFields: App.calcFields, gsheetMeta: App.gsheetMeta
     };
     
     // For Google Sheets, never embed the data. The viewer should fetch it live.
@@ -3469,6 +3780,8 @@ const ShareMgr = {
       
       App.dataSource = cfg.dataSource || { type: null, gsheetUrl: null, gsheetName: null };
       App.autoRefreshInterval = cfg.autoRefreshInterval || 0;
+      App.selectedSheets = cfg.selectedSheets || []; App.relationships = cfg.relationships || []; App.calcFields = cfg.calcFields || [];
+      App.gsheetMeta = cfg.gsheetMeta || { id: null, kind: null, gid: null };
 
       if (cfg.data && cfg.data.length){
         App.data = cfg.data; App.columns = cfg.columns || Object.keys(cfg.data[0] || {}); App.columnTypes = cfg.columnTypes || {};
@@ -3700,7 +4013,6 @@ const LocalCache = {
       const idx = LocalCache.getIndex().filter(e => e.id !== id);
       idx.unshift({ id, name: (payload.meta && payload.meta.name) || 'Untitled Dashboard', updatedAt: Date.now() });
       LocalCache.setIndex(idx);
-      localStorage.setItem('insightDeck.lastDashboardId', id);
     } catch(e){ console.warn('Local cache save failed (storage full?)', e); Utils.toast('This dataset is too large for local storage. Enable Cloud Sync for large dashboards.', true); }
     return id;
   },
@@ -3740,8 +4052,14 @@ const ProjectMgr = {
     const cur = App.pages.find(p => p.id === App.currentPageId);
     PageMgr.loadState(cur.state || PageMgr.blankState());
   },
+  // Returns { id, cloudSaved } so callers (in particular wireShare) know whether the write
+  // actually reached Firestore — CloudMgr.ready only means "Firebase initialized OK", it does
+  // NOT mean the doc write succeeded (rules not pasted in yet, offline, etc). Handing out a
+  // "?d=" link built on CloudMgr.ready alone was the root cause of "shared link has no data":
+  // the link pointed at a Firestore doc that was never actually written, so it only ever
+  // resolved on the original browser (via its local cache), never for anyone else.
   async save(){
-    if (App.role !== 'editor') return;
+    if (App.role !== 'editor') return { id: App.dashboardId, cloudSaved: false };
     const payload = ProjectMgr.buildPayload();
     const localId = LocalCache.save(App.dashboardId, payload);
     if (!App.dashboardId) App.dashboardId = localId;
@@ -3749,17 +4067,22 @@ const ProjectMgr = {
     // Claude Sync — Claude's own built-in persistent storage. This is what actually makes the
     // free-form layout (position/size/order/visibility of every KPI, table, chart, filter and
     // text box) survive a reload, independent of whether Firebase Cloud Sync is configured.
+    // NOTE: window.storage is scoped to this browser tab's Claude surface — it is NOT reachable
+    // by someone else opening the share link in their own browser, so it is a local-only cache
+    // here (same role as LocalCache), never something a shared link can depend on.
     let claudeSynced = false;
     if (ClaudeSyncMgr.available()){
       try { await ClaudeSyncMgr.save(App.dashboardId, payload); claudeSynced = true; }
       catch(e){ console.warn('Claude Sync save failed', e); }
     }
 
+    let cloudSaved = false;
     if (CloudMgr.ready){
       try {
         const cloudId = await CloudMgr.saveDashboard(App.dashboardId && !App.dashboardId.startsWith('local') && !App.dashboardId.startsWith('legacy') ? App.dashboardId : null, payload);
-        App.dashboardId = cloudId; localStorage.setItem('insightDeck.lastDashboardId', cloudId); LocalCache.save(cloudId, payload);
+        App.dashboardId = cloudId; LocalCache.save(cloudId, payload);
         if (claudeSynced) { try { await ClaudeSyncMgr.save(cloudId, payload); } catch(e){} } // re-key under the final cloud id too
+        cloudSaved = true;
         Utils.toast('Saved — this dashboard is now live for anyone with the Share link.');
       } catch(e){ Utils.toast('Saved on this device. Cloud save failed: ' + CloudMgr.explainError('saveDashboard', e), true); }
     } else if (claudeSynced) {
@@ -3768,36 +4091,29 @@ const ProjectMgr = {
       Utils.toast('Saved on this device only. Open ⚙ Application Settings → Cloud Sync so Save/Share work on other devices.', true);
     }
     UI.reflectCloudStatus();
+    return { id: App.dashboardId, cloudSaved };
   },
   async loadById(id){
     if (CloudMgr.ready){
-      try { const payload = await CloudMgr.loadDashboard(id); App.dashboardId = id; ProjectMgr.applyPayload(payload); localStorage.setItem('insightDeck.lastDashboardId', id); return true; }
+      try { const payload = await CloudMgr.loadDashboard(id); App.dashboardId = id; ProjectMgr.applyPayload(payload); return true; }
       catch(e){ console.warn('Cloud load failed, trying local cache', e); }
     }
     if (ClaudeSyncMgr.available()){
       try {
         const payload = await ClaudeSyncMgr.load(id);
-        if (payload){ App.dashboardId = id; ProjectMgr.applyPayload(payload); localStorage.setItem('insightDeck.lastDashboardId', id); return true; }
+        if (payload){ App.dashboardId = id; ProjectMgr.applyPayload(payload); return true; }
       } catch(e){ console.warn('Claude Sync load failed, trying local cache', e); }
     }
     const local = LocalCache.load(id);
     if (local){ App.dashboardId = id; ProjectMgr.applyPayload(local); return true; }
     return false;
-  },
-  async loadLast(){
-    LocalCache.migrateLegacy();
-    const lastId = localStorage.getItem('insightDeck.lastDashboardId');
-    if (lastId && await ProjectMgr.loadById(lastId)) return true;
-    // Brand-new browser/device with nothing in localStorage yet, but this same Claude
-    // conversation/artifact has a dashboard saved via Claude Sync — pick up its most recent one.
-    if (ClaudeSyncMgr.available()){
-      const csIdx = await ClaudeSyncMgr.getIndex();
-      if (csIdx.length && await ProjectMgr.loadById(csIdx[0].id)) return true;
-    }
-    const idx = LocalCache.getIndex();
-    if (idx.length) return await ProjectMgr.loadById(idx[0].id);
-    return false;
   }
+  // NOTE: there is intentionally no "loadLast()" here. The original Dashboard Maker (opened with
+  // no "?d=" id) must never auto-restore whichever dashboard was last touched on this browser —
+  // it always starts blank. A single "last opened" pointer is exactly the kind of global,
+  // cross-dashboard key this app avoids: every dashboard lives only under its own unique id
+  // (LocalCache.keyFor(id) / the Firestore doc id), and the ONLY ways back into one are an
+  // explicit "?d=<id>" link or picking it from Manage Dashboards.
 };
 
 // Application Settings (spec item #8) — GitHub URLs, defaults, company info, owned by whoever is signed in.
@@ -3926,19 +4242,36 @@ const UI = {
     if (CloudMgr.ready) await CloudMgr.ensureOwnerBootstrap();
     UI.reflectCloudStatus();
 
+    // Recover any pre-cloud-era single-dashboard save into the Manage Dashboards list. This is
+    // just populating that list for later, explicit, user-initiated opening — it never causes
+    // anything to load automatically, so it doesn't conflict with "Dashboard Maker opens blank".
+    LocalCache.migrateLegacy();
+
     const params = new URLSearchParams(location.search);
     const dashId = params.get('d');
     const legacyShared = !dashId ? ShareMgr.loadFromUrl() : false; // old compressed-link format, still supported
     App.role = (dashId || legacyShared) ? (params.get('role') === 'editor' ? 'editor' : 'viewer') : (params.get('role') === 'viewer' ? 'viewer' : 'editor');
 
+    // The `role` URL param is only a convenience default for people who AREN'T signed in (e.g. an
+    // external viewer link). It should never be able to lock out the actual dashboard owner: the
+    // app's own "Share" link is generated with `role=viewer` even when the owner copies/reuses it
+    // themselves (bookmarking it, reloading the tab, etc), which previously left every edit-only
+    // control — Apply Join included — silently doing nothing with no explanation. Real authorization
+    // already comes from Cloud Sync (CloudMgr.isOwner(), backed by Firestore rules), so once that
+    // resolves, a signed-in owner is always treated as an editor regardless of what the URL says.
+    if (CloudMgr.ready && CloudMgr.isOwner()) App.role = 'editor';
+
+    // The Dashboard Maker (opened with no "?d=" share link) is the master/original app and must
+    // NOT remember or auto-restore whichever dashboard was last edited on this browser — every
+    // plain open starts a fresh, blank dashboard builder. A previously saved dashboard can still
+    // be reopened, but only via an explicit action (a share link, or picking it from "Manage
+    // Dashboards"), never automatically on load.
     let restored = false;
     if (dashId){
       restored = await ProjectMgr.loadById(dashId);
       if (!restored) Utils.toast('That dashboard link could not be found. Showing a blank dashboard instead.', true);
     } else if (legacyShared){
       restored = true;
-    } else {
-      restored = await ProjectMgr.loadLast();
     }
 
     if (restored){
@@ -4105,21 +4438,31 @@ const UI = {
       if (App.role !== 'editor') return;
       if (!App.data.length && App.dataSource.type !== 'gsheet'){ Utils.toast('Upload data before sharing the dashboard', true); return; }
       const warn = document.getElementById('share-warning');
-      if (CloudMgr.ready){
-        if (!App.dashboardId || App.dashboardId.startsWith('local') || App.dashboardId.startsWith('legacy')){
-          Utils.toast('Saving to the cloud first…');
-          await ProjectMgr.save();
-        }
-        const link = location.origin + location.pathname + '?d=' + encodeURIComponent(App.dashboardId) + '&role=viewer';
+      Utils.toast('Preparing your share link…');
+      // Always (re)save before sharing, and — critically — branch on whether that save actually
+      // reached Firestore (cloudSaved), never on CloudMgr.ready alone. CloudMgr.ready only tells
+      // us Firebase initialized; it says nothing about whether this particular write succeeded.
+      // Basing the link on "ready" alone is what previously produced links to Firestore docs that
+      // were never written, which loaded fine on the editor's own browser (local cache) but showed
+      // no data for anyone else who opened them — this is the bug this chapter fixes.
+      const { id, cloudSaved } = await ProjectMgr.save();
+      if (cloudSaved){
+        const link = location.origin + location.pathname + '?d=' + encodeURIComponent(id) + '&role=viewer';
         document.getElementById('share-link-input').value = link;
-        warn.textContent = 'Live link — always shows your latest saved version, and pulls fresh Google Sheet data automatically. No upload needed on the other end.';
+        warn.textContent = 'Live link — always shows your latest saved version, and pulls fresh Google Sheet data automatically. Works for anyone, on any browser or device, independent of this computer.';
       } else {
+        // Self-contained fallback: the entire dashboard configuration (and, for non-Sheet sources,
+        // the data itself) travels inside the link's own URL hash. It does not read or write
+        // Firestore, ClaudeSync, or this browser's localStorage — so it is just as isolated and
+        // just as portable to another browser/device as a working cloud link would be.
         const { link, truncated, sizeKB } = ShareMgr.generateLink();
         document.getElementById('share-link-input').value = link;
         warn.textContent = (truncated
           ? `Dataset is large — link includes dashboard config only; viewer will need the same data source. `
-          : `Link size ~${sizeKB}KB — includes config, live data fetches on load. `)
-          + 'This is an offline share link (no Cloud Sync set up) — it always shows this exact snapshot, not future edits. Set up Cloud Sync in ⚙ Application Settings for a live, always-current link instead.';
+          : `Link size ~${sizeKB}KB — includes full config, and pulls fresh Google Sheet data on load. `)
+          + (CloudMgr.ready
+            ? 'Cloud Sync save failed, so this self-contained link was used instead — it will still open correctly on any device, since everything it needs travels in the link itself. Check ⚙ Application Settings → Cloud Sync (and your Firestore rules) to enable live cloud links.'
+            : 'This self-contained link works on any device — set up Cloud Sync in ⚙ Application Settings for a live, always-current link instead.');
       }
       bootstrap.Modal.getOrCreateInstance(document.getElementById('share-modal')).show();
     });
@@ -4413,23 +4756,11 @@ const UI = {
       Utils.toast(`Found ${App.relationships.length} possible relationship(s) — review the join type before applying.`);
     });
     document.getElementById('rel-apply-btn')?.addEventListener('click', () => {
-      if (App.role !== 'editor') return;
-      if (!App.dataSource.gsheetName){ Utils.toast('Pick a primary sheet first', true); return; }
-      const { rows, errors } = JoinEngine.run(App.dataSource.gsheetName, App.relationships);
-      const box = document.getElementById('rel-validation');
-      box.innerHTML = errors.length ? errors.map(e => `<div class="text-danger">${Utils.esc(e)}</div>`).join('') : '';
-      if (!rows.length){ Utils.toast('Join produced no rows — check your relationships', true); return; }
-      const prevColumns = App.columns || [];
-      App.data = rows; App.columns = Object.keys(rows[0]); App.columnTypes = {};
-      App.columns.forEach(c => App.columnTypes[c] = DataMgr.detectTypeFor(rows, c));
-      App.filteredCache = null; App.uploadDate = new Date();
-      if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
-      CalcFieldMgr.applyAll();
-      UI.renderUploadSummary(); UI.populateAllColumnSelectors(); UI.refreshAll();
-      Utils.toast(`Combined sheets — ${rows.length.toLocaleString()} rows, ${App.columns.length} columns.`);
+      if (App.role !== 'editor'){ Utils.toast('You\u2019re viewing this dashboard in read-only mode, so Apply Join can\u2019t run. Click "Sign in to edit" (or open this with an editor link) to make changes.', true); return; }
+      DataMgr.applyRelationships();
     });
     document.getElementById('calc-add-btn')?.addEventListener('click', () => {
-      if (App.role !== 'editor') return;
+      if (App.role !== 'editor'){ Utils.toast('You\u2019re viewing this dashboard in read-only mode, so calculated fields can\u2019t be added. Click "Sign in to edit" (or open this with an editor link) to make changes.', true); return; }
       const name = document.getElementById('calc-name').value.trim();
       const formula = document.getElementById('calc-formula').value.trim();
       if (!name || !formula){ Utils.toast('Enter a field name and a formula', true); return; }
@@ -4463,16 +4794,44 @@ const UI = {
     groupSel.innerHTML = '<option value="">None</option>' + App.columns.map(c => `<option value="${Utils.esc(c)}">${Utils.esc(c)}</option>`).join('');
     const picker = document.getElementById('table-col-picker');
     picker.innerHTML = App.columns.map(c => `<span class="filter-chip active" data-c="${Utils.esc(c)}" title="Click to include/exclude · drag to reorder"><i class="fa-solid fa-grip-vertical me-1" style="opacity:.5"></i>${Utils.esc(c)}</span>`).join('');
-    picker.querySelectorAll('.filter-chip').forEach(chip => { chip.addEventListener('click', (e) => { if (!chip.dataset.dragging) chip.classList.toggle('active'); }); });
+    picker.querySelectorAll('.filter-chip').forEach(chip => { chip.addEventListener('click', (e) => { if (!chip.dataset.dragging){ chip.classList.toggle('active'); UI.applyTableDateAggVisibility(); } }); });
     if (picker._sortable) picker._sortable.destroy();
     picker._sortable = Sortable.create(picker, { animation:150, ghostClass:'sortable-ghost' });
     UI.populateChartXOrderPicker();
+    UI.applyChartDateAggVisibility();
+    UI.applyTableDateAggVisibility();
   },
   populateChartXOrderPicker(savedOrder){
     const col = document.getElementById('chart-x').value; const picker = document.getElementById('chart-xorder-picker');
     if (!picker) return;
     if (!col || !App.data.length){ picker.innerHTML = '<div class="text-slate-soft small p-1">Choose an X axis column to arrange its values.</div>'; return; }
-    let values = DataMgr.distinctValues(col);
+    const dateAggEl = document.getElementById('chart-dateagg');
+    const dateAgg = dateAggEl ? dateAggEl.value : '';
+    const isDateCol = App.columnTypes[col] === 'date';
+    let values;
+    if (isDateCol && (dateAgg === 'month' || dateAgg === 'monthcombo')){
+      // Month-level categories only, financial-year order (Apr..Mar) — never one chip per date.
+      const present = new Set();
+      App.data.forEach(r => { const d = Utils.toDate(r[col]); if (d) present.add(d.getMonth()+1); });
+      let months = Array.from(present);
+      if (dateAgg === 'monthcombo'){
+        // Narrow to whatever months are chosen in an active Combined Month Selection filter on
+        // this same column, if any — otherwise fall back to every month present in the data.
+        const comboFilter = App.filters.find(f => f.type === 'monthcombo' && f.column === col);
+        const selected = comboFilter ? (App.filterValues[comboFilter.id] || []).map(String) : [];
+        if (selected.length) months = months.filter(m => selected.includes(String(m)));
+      }
+      months.sort((a,b) => Utils.fyMonthIndex(a-1) - Utils.fyMonthIndex(b-1));
+      values = months.map(m => Utils.DATE_AGG_MONTHS[m-1]);
+    } else if (isDateCol && dateAgg === 'year'){
+      // Year-level categories only.
+      const present = new Set();
+      App.data.forEach(r => { const d = Utils.toDate(r[col]); if (d) present.add(d.getFullYear()); });
+      values = Array.from(present).sort((a,b) => a-b).map(String);
+    } else {
+      // As-It-Date (raw dates) or a non-date column — unchanged, existing behaviour.
+      values = DataMgr.distinctValues(col);
+    }
     if (savedOrder && savedOrder.length){
       const orderIndex = new Map(savedOrder.map((v,i) => [String(v), i]));
       values = values.slice().sort((a,b) => {
@@ -4540,26 +4899,46 @@ const UI = {
     });
   },
   wireTableForm(){
+    // Selecting a Date Format updates the live table preview immediately when editing an
+    // existing table on the canvas — no need to click "Update Table" first.
+    document.getElementById('table-dateagg').addEventListener('change', () => {
+      if (!App.editId.table) return;
+      const existing = App.tables.find(t => t.id === App.editId.table);
+      if (!existing) return;
+      existing.dateAgg = document.getElementById('table-dateagg').value;
+      TableMgr.renderTable(existing.id);
+    });
     document.getElementById('table-form').addEventListener('submit', e => {
       e.preventDefault(); if (App.role !== 'editor') return; if (!App.columns.length){ Utils.toast('Upload data first', true); return; }
       const selectedCols = Array.from(document.querySelectorAll('#table-col-picker .filter-chip.active')).map(c => c.dataset.c);
       if (!selectedCols.length){ Utils.toast('Select at least one column', true); return; }
       const fields = {
         name: document.getElementById('table-name').value.trim(), columns: selectedCols, footerCalc: document.getElementById('table-footer-calc').value,
-        numFmt: document.getElementById('table-numfmt').value, sort: document.getElementById('table-sort').checked, search: document.getElementById('table-search').checked, page: document.getElementById('table-page').checked
+        numFmt: document.getElementById('table-numfmt').value, dateAgg: document.getElementById('table-dateagg').value, sort: document.getElementById('table-sort').checked, search: document.getElementById('table-search').checked, page: document.getElementById('table-page').checked
       };
       if (App.editId.table){
         const existing = App.tables.find(t => t.id === App.editId.table); Object.assign(existing, fields);
         TableMgr.cancelEdit(); TableMgr.renderList(); TableMgr.renderTable(existing.id); Utils.toast(`Table "${fields.name}" updated`);
       } else {
         const cfg = { id: nextId('tbl'), ...fields }; TableMgr.addTable(cfg); e.target.reset();
-        document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active')); Utils.toast(`Table "${cfg.name}" added`);
+        document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active')); UI.applyTableDateAggVisibility(); Utils.toast(`Table "${cfg.name}" added`);
       }
     });
   },
   wireChartForm(){
-    document.getElementById('chart-x').addEventListener('change', () => UI.populateChartXOrderPicker());
-    document.getElementById('chart-type').addEventListener('change', () => UI.applyChartTypeFieldVisibility());
+    document.getElementById('chart-x').addEventListener('change', () => { UI.populateChartXOrderPicker(); UI.applyChartDateAggVisibility(); });
+    document.getElementById('chart-type').addEventListener('change', () => { UI.applyChartTypeFieldVisibility(); UI.applyChartDateAggVisibility(); });
+    // Selecting a Date Format updates the live chart preview immediately when editing an
+    // existing chart on the canvas — no need to click "Update Chart" first.
+    document.getElementById('chart-dateagg').addEventListener('change', () => {
+      UI.populateChartXOrderPicker();
+      if (!App.editId.chart) return;
+      const existing = App.charts.find(c => c.id === App.editId.chart);
+      if (!existing) return;
+      existing.dateAgg = document.getElementById('chart-dateagg').value;
+      existing.xOrder = [];
+      ChartMgr.renderChart(existing.id);
+    });
     document.getElementById('chart-form').addEventListener('submit', e => {
       e.preventDefault(); if (App.role !== 'editor') return; if (!App.columns.length){ Utils.toast('Upload data first', true); return; }
       const fields = {
@@ -4568,7 +4947,7 @@ const UI = {
         yMax: document.getElementById('chart-ymax').value, size: document.getElementById('chart-size').value,
         target: document.getElementById('chart-target').value ? Number(document.getElementById('chart-target').value) : null,
         bins: document.getElementById('chart-bins').value ? Number(document.getElementById('chart-bins').value) : null,
-        agg: document.getElementById('chart-agg').value, legend: document.getElementById('chart-legend').checked, datalabels: document.getElementById('chart-datalabels').checked,
+        agg: document.getElementById('chart-agg').value, dateAgg: document.getElementById('chart-dateagg').value, legend: document.getElementById('chart-legend').checked, datalabels: document.getElementById('chart-datalabels').checked,
         tooltip: document.getElementById('chart-tooltip').checked, grid: document.getElementById('chart-grid').checked, animation: document.getElementById('chart-animation').checked,
         trendline: document.getElementById('chart-trendline').checked, multiColor: document.getElementById('chart-multicolor').checked, xOrder: Array.from(document.querySelectorAll('#chart-xorder-picker .filter-chip')).map(c => c.dataset.v)
       };
@@ -4580,6 +4959,7 @@ const UI = {
       }
     });
     UI.applyChartTypeFieldVisibility();
+    UI.applyChartDateAggVisibility();
   },
   // Shows/hides the Y-Max, Size, Target and Bins fields depending on which chart type is selected,
   // and relabels X/Y so the form stays self-explanatory for every chart family (e.g. Gauge/Bullet
@@ -4597,6 +4977,29 @@ const UI = {
     document.getElementById('chart-y-label').textContent = meta.needsYMax ? 'Y Axis (Min)' : 'Y Axis';
     const trendRow = document.getElementById('chart-trendline').closest('.form-check');
     if (trendRow) trendRow.classList.toggle('d-none', !meta.allowTrendline);
+  },
+  // Shows the "Date Format" dropdown only when the selected X-Axis column is a date-type column
+  // AND the chosen chart type actually buckets by a categorical X value (bar/line/pareto/
+  // waterfall/range/combo/pie/radar families all go through ChartMgr.aggregate() under the hood —
+  // scatter/bubble (xy), histogram (binned) and gauge/bullet (single-value) don't).
+  applyChartDateAggVisibility(){
+    const type = document.getElementById('chart-type').value;
+    const meta = ChartMgr.META[type] || ChartMgr.META.bar;
+    const xCol = document.getElementById('chart-x').value;
+    const eligibleFamily = !['xy','binned','gauge','bullet'].includes(meta.family);
+    const isDateCol = xCol && App.columnTypes[xCol] === 'date';
+    document.getElementById('chart-dateagg-row').classList.toggle('d-none', !(eligibleFamily && isDateCol));
+  },
+  // Shows the table's "Date Format" dropdown only when at least one currently-selected (active)
+  // column is a date-type column — the chosen format is then applied to every date column shown
+  // in that table.
+  applyTableDateAggVisibility(){
+    const picker = document.getElementById('table-col-picker');
+    const row = document.getElementById('table-dateagg-row');
+    if (!picker || !row) return;
+    const activeCols = Array.from(picker.querySelectorAll('.filter-chip.active')).map(c => c.dataset.c);
+    const hasDateCol = activeCols.some(c => App.columnTypes[c] === 'date');
+    row.classList.toggle('d-none', !hasDateCol);
   },
   wireTextboxForm(){
     document.getElementById('textbox-form').addEventListener('submit', e => {
