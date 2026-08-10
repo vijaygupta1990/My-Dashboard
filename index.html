@@ -2054,11 +2054,18 @@ const RelationshipMgr = {
     for (let i = 0; i < names.length; i++){
       for (let j = i + 1; j < names.length; j++){
         const a = App.sheetTables[names[i]], b = App.sheetTables[names[j]];
-        a.columns.forEach(col => {
-          if (!b.columns.includes(col)) return;
-          if (a.columnTypes[col] !== b.columnTypes[col]) return; // datatype mismatch — skip auto-detect
-          found.push({ id: nextId('rel'), base: a.name, other: b.name, baseKeys: [col], otherKeys: [col], type: 'left' });
-        });
+        // Collect every shared, type-compatible column, but only ever turn ONE of them into a
+        // relationship for this sheet pair. Creating a separate relationship per shared column (the
+        // old behavior) meant JoinEngine.run() chained N joins between the same two sheets for N
+        // shared columns — and each pass re-merges the ENTIRE right-hand sheet again, multiplying
+        // row counts (and therefore every SUM/COUNT/AVG built on top of them) instead of relating
+        // the two tables once. This was the root cause of inflated dashboard totals.
+        const shared = a.columns.filter(col => b.columns.includes(col) && a.columnTypes[col] === b.columnTypes[col]);
+        if (!shared.length) continue;
+        // Prefer a column that looks like an identifier (name contains "id") — almost always the
+        // intended join key in a fact/dimension pair — otherwise fall back to the first shared column.
+        const key = shared.find(c => /id/i.test(c)) || shared[0];
+        found.push({ id: nextId('rel'), base: a.name, other: b.name, baseKeys: [key], otherKeys: [key], type: 'left' });
       }
     }
     App.relationships = found;
@@ -2093,6 +2100,8 @@ const RelationshipMgr = {
     if (blankCount > 0) warnings.push(`${blankCount} row(s) in ${L.name} have a blank join key and were left unjoined.`);
     if (new Set(lKeys).size !== lKeys.length) warnings.push(`Duplicate keys in ${L.name} — matching rows in ${R.name} will be duplicated (fan-out) for those.`);
     if (lKeys.length && rKeys.length && !rKeys.some(k => lKeys.includes(k))) warnings.push(`No matching keys found between ${L.name} and ${R.name} — check the key columns.`);
+    const sharedNonKeyCols = L.columns.filter(c => R.columns.includes(c) && !rel.baseKeys.includes(c));
+    if (sharedNonKeyCols.length) warnings.push(`${L.name} and ${R.name} both have column(s) "${sharedNonKeyCols.join('", "')}" — ${L.name}'s values are kept, ${R.name}'s matching column(s) are dropped from the merged result.`);
     return { errors, warnings };
   }
 };
@@ -2118,14 +2127,21 @@ const JoinEngine = {
       if (keyIsBlank(r, rightKeys)) return;
       const k = keyStr(r, rightKeys); if (!rightIndex.has(k)) rightIndex.set(k, []); rightIndex.get(k).push(r);
     });
-    const prefix = (row, exceptKeys) => { const out = {}; Object.keys(row).forEach(c => { if (!exceptKeys.includes(c)) out[c] = row[c]; }); return out; };
+    // Columns the LEFT side already owns must never be silently clobbered by the right table's
+    // value for a same-named column that isn't the join key itself — e.g. an Order Sheet and a
+    // Payment Sheet might each have their own "Date" or "Amount" column. Only genuinely new columns
+    // from the right table are merged in; a same-named non-key column on the right is dropped
+    // rather than overwriting the left's (previously it silently overwrote, corrupting SUM/MIN/MAX/
+    // AVERAGE on the base table's own columns).
+    const leftCols = leftRows.length ? Object.keys(leftRows[0]) : [];
+    const prefix = (row, exceptKeys) => { const out = {}; Object.keys(row).forEach(c => { if (!exceptKeys.includes(c) && !leftCols.includes(c)) out[c] = row[c]; }); return out; };
     const out = []; const matchedRight = new Set();
     leftRows.forEach(lr => {
       const matches = keyIsBlank(lr, leftKeys) ? null : rightIndex.get(keyStr(lr, leftKeys));
       if (matches && matches.length){
         matches.forEach(rr => { matchedRight.add(rr); out.push({ ...lr, ...prefix(rr, rightKeys) }); });
       } else if (type === 'left' || type === 'full'){
-        const blank = {}; rightCols.forEach(c => { if (!rightKeys.includes(c)) blank[c] = ''; });
+        const blank = {}; rightCols.forEach(c => { if (!rightKeys.includes(c) && !leftCols.includes(c)) blank[c] = ''; });
         out.push({ ...lr, ...blank });
       }
     });
