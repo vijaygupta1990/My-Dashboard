@@ -298,26 +298,32 @@ body.viewer-mode .resize-handle{display:none;}
 #dashboard-canvas.stacked-mode .widget[data-wtype="chart"] .widget-body,
 #dashboard-canvas.stacked-mode .widget[data-wtype="table"] .widget-body{min-height:280px;}
 
-/* KPI row + cards — responsive 7-column CSS Grid (Row 1 = KPI 1-7, Row 2 = KPI 8-14, ...) */
-#kpi-row{display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); grid-auto-rows:1fr; gap:1rem;}
+/* KPI row + cards — responsive 5-column CSS Grid (Row 1 = KPI 1-5, Row 2 = KPI 6-10, ...).
+   Cards auto-wrap onto additional rows once there are more than 5 KPI cards, with equal
+   spacing/alignment preserved by the grid (see JS-driven auto-fit in fitValueText/autoFitKpis). */
+#kpi-row{display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); grid-auto-rows:1fr; gap:1rem;}
 .kpi-card{
-  border-radius:var(--radius-md); padding:1rem 1.1rem; position:relative; overflow:hidden;
+  border-radius:var(--radius-md); padding:1.1rem 1.2rem; position:relative; overflow:hidden;
   box-shadow:var(--shadow-soft); min-width:0; width:100%; height:100%;
   border:1px solid var(--border); background:var(--card);
+  display:flex; flex-direction:column; justify-content:center;
   transition:transform .15s ease, box-shadow .15s ease;
 }
 .kpi-card:hover{transform:translateY(-2px); box-shadow:var(--shadow-hover);}
 .kpi-card::before{
   content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--kpi-color, var(--signal));
 }
-.kpi-card .kpi-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:.5rem;}
+.kpi-card .kpi-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:.55rem; gap:.5rem;}
 .kpi-card .kpi-icon{
   width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center;
   background:color-mix(in srgb, var(--kpi-color, var(--signal)) 16%, transparent); color:var(--kpi-color, var(--signal));
-  font-size:.95rem;
+  font-size:.95rem; flex:0 0 auto;
 }
-.kpi-card .kpi-name{font-size:.74rem; font-weight:700; color:var(--slate); text-transform:uppercase; letter-spacing:.04em;}
-.kpi-card .kpi-value{font-family:var(--font-mono); font-weight:600; line-height:1; margin:.15rem 0; overflow-wrap:anywhere; max-width:100%;}
+.kpi-card .kpi-name{font-size:.74rem; font-weight:700; color:var(--slate); text-transform:uppercase; letter-spacing:.04em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.kpi-card .kpi-value{
+  font-family:var(--font-mono); font-weight:800; line-height:1.05; margin:.2rem 0; letter-spacing:-.01em;
+  white-space:nowrap; overflow:hidden; max-width:100%; width:100%;
+}
 .kpi-card .kpi-trend{font-size:.74rem; font-weight:600; display:flex; align-items:center; gap:.25rem;}
 .kpi-card .kpi-trend.up{color:#1FAF6B;}
 .kpi-card .kpi-trend.down{color:var(--coral);}
@@ -925,8 +931,8 @@ service cloud.firestore {
             <div class="col-4">
               <label class="form-label mini">Font Size</label>
               <select class="form-select form-select-sm" id="kpi-fontsize">
-                <option value="1.3rem">S</option><option value="1.7rem" selected="">M</option>
-                <option value="2.2rem">L</option><option value="2.7rem">XL</option>
+                <option value="1.6rem">S</option><option value="2.1rem" selected="">M</option>
+                <option value="2.6rem">L</option><option value="3.1rem">XL</option>
               </select>
             </div>
             <div class="col-4">
@@ -2207,25 +2213,24 @@ const KpiMgr = {
       if (!card) return;
       const base = el.dataset.baseSize;
       if (base) el.style.fontSize = base; // reset before measuring — a previous shrink shouldn't compound
-      // Force single-line while measuring: with wrapping allowed, the browser wraps the number
-      // BEFORE this runs, so scrollWidth only ever reflects the (already-narrow) wrapped line and
-      // the shrink loop below would never fire — which is exactly why it wrapped to "1,24,69,/677"
-      // at full size instead of shrinking to fit on one line.
+      // Always single-line: the value must never wrap onto a second line, no matter how narrow the
+      // card is. CSS already sets white-space:nowrap + overflow:hidden as a hard backstop; here we
+      // shrink the font just enough that the number fits on one line without touching that backstop.
       el.style.whiteSpace = 'nowrap';
       const cardStyle = getComputedStyle(card);
       const maxWidth = card.clientWidth - parseFloat(cardStyle.paddingLeft || 0) - parseFloat(cardStyle.paddingRight || 0) - 2;
-      const MIN_PX = 12;
+      const MIN_PX = 11;
       let guard = 0;
-      while (el.scrollWidth > maxWidth && guard < 60){
+      while (el.scrollWidth > maxWidth && guard < 80){
         const size = parseFloat(getComputedStyle(el).fontSize);
         if (size <= MIN_PX) break;
         el.style.fontSize = Math.max(MIN_PX, size - 1) + 'px';
         guard++;
       }
-      // Only if it still doesn't fit even at the minimum readable size (an extremely narrow card
-      // paired with a very long number) do we allow it to wrap to a second line — never clipped,
-      // and never wrapped unnecessarily at a size that could have just shrunk instead.
-      el.style.whiteSpace = (el.scrollWidth > maxWidth) ? 'normal' : 'nowrap';
+      // Extreme edge case (very long number in a very narrow card, already at the minimum readable
+      // size): stay on one line and truncate with an ellipsis rather than wrapping or overflowing
+      // the card. This never triggers at normal card widths/values.
+      el.style.textOverflow = (el.scrollWidth > maxWidth) ? 'ellipsis' : 'clip';
     });
   },
   buildColorRow(){
