@@ -2199,7 +2199,7 @@ const KpiMgr = {
     if (typeof LayoutMgr !== "undefined") LayoutMgr.autoFitKpis();
   },
   // Shrinks each .kpi-value's font size (from its configured S/M/L/XL size) just enough that the
-  // number fits on one line inside its card — re-run on every render AND whenever the KPI row is
+  // number fits on ONE line inside its card — re-run on every render AND whenever the KPI row is
   // resized (see LayoutMgr.autoFitKpis), since the fit depends on the card's actual pixel width.
   fitValueText(){
     document.querySelectorAll('#kpi-row .kpi-value').forEach(el => {
@@ -2207,7 +2207,13 @@ const KpiMgr = {
       if (!card) return;
       const base = el.dataset.baseSize;
       if (base) el.style.fontSize = base; // reset before measuring — a previous shrink shouldn't compound
-      const maxWidth = card.clientWidth - 4; // small buffer so the digit right at the edge isn't flush against the card border
+      // Force single-line while measuring: with wrapping allowed, the browser wraps the number
+      // BEFORE this runs, so scrollWidth only ever reflects the (already-narrow) wrapped line and
+      // the shrink loop below would never fire — which is exactly why it wrapped to "1,24,69,/677"
+      // at full size instead of shrinking to fit on one line.
+      el.style.whiteSpace = 'nowrap';
+      const cardStyle = getComputedStyle(card);
+      const maxWidth = card.clientWidth - parseFloat(cardStyle.paddingLeft || 0) - parseFloat(cardStyle.paddingRight || 0) - 2;
       const MIN_PX = 12;
       let guard = 0;
       while (el.scrollWidth > maxWidth && guard < 60){
@@ -2216,6 +2222,10 @@ const KpiMgr = {
         el.style.fontSize = Math.max(MIN_PX, size - 1) + 'px';
         guard++;
       }
+      // Only if it still doesn't fit even at the minimum readable size (an extremely narrow card
+      // paired with a very long number) do we allow it to wrap to a second line — never clipped,
+      // and never wrapped unnecessarily at a size that could have just shrunk instead.
+      el.style.whiteSpace = (el.scrollWidth > maxWidth) ? 'normal' : 'nowrap';
     });
   },
   buildColorRow(){
