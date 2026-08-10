@@ -317,7 +317,7 @@ body.viewer-mode .resize-handle{display:none;}
   font-size:.95rem;
 }
 .kpi-card .kpi-name{font-size:.74rem; font-weight:700; color:var(--slate); text-transform:uppercase; letter-spacing:.04em;}
-.kpi-card .kpi-value{font-family:var(--font-mono); font-weight:600; line-height:1; margin:.15rem 0;}
+.kpi-card .kpi-value{font-family:var(--font-mono); font-weight:600; line-height:1; margin:.15rem 0; overflow-wrap:anywhere; max-width:100%;}
 .kpi-card .kpi-trend{font-size:.74rem; font-weight:600; display:flex; align-items:center; gap:.25rem;}
 .kpi-card .kpi-trend.up{color:#1FAF6B;}
 .kpi-card .kpi-trend.down{color:var(--coral);}
@@ -2186,13 +2186,37 @@ const KpiMgr = {
       <div class="kpi-card" style="--kpi-color:${k.color}; max-width:${k.width}; border-radius:${k.radius}; ${k.shadow?'':'box-shadow:none;'}">
         <button class="kpi-edit-btn no-print" onclick="KpiMgr.startEdit('${k.id}')" title="Edit this KPI card"><i class="fa-solid fa-pen"></i></button>
         <div class="kpi-top"><span class="kpi-name">${Utils.esc(k.name)}</span>${iconHtml}</div>
-        <div class="kpi-value" style="font-size:${k.fontSize}">${Utils.formatValue(val, k.format)}</div>
+        <div class="kpi-value" style="font-size:${k.fontSize}" data-base-size="${k.fontSize}">${Utils.formatValue(val, k.format)}</div>
         ${trendHtml}${compareHtml}
       </div>`;
     }).join('');
+    // Big numbers (large rupee totals, etc) can be wider than the card at the chosen font size —
+    // shrink each value down just enough to fit on one line rather than letting the card's
+    // `overflow:hidden` silently clip off the end of the number.
+    KpiMgr.fitValueText();
     // Resize the widget to fit immediately (don't wait on the debounced ResizeObserver) so newly
     // added/edited cards are never briefly clipped or overlapping the row below.
     if (typeof LayoutMgr !== "undefined") LayoutMgr.autoFitKpis();
+  },
+  // Shrinks each .kpi-value's font size (from its configured S/M/L/XL size) just enough that the
+  // number fits on one line inside its card — re-run on every render AND whenever the KPI row is
+  // resized (see LayoutMgr.autoFitKpis), since the fit depends on the card's actual pixel width.
+  fitValueText(){
+    document.querySelectorAll('#kpi-row .kpi-value').forEach(el => {
+      const card = el.closest('.kpi-card');
+      if (!card) return;
+      const base = el.dataset.baseSize;
+      if (base) el.style.fontSize = base; // reset before measuring — a previous shrink shouldn't compound
+      const maxWidth = card.clientWidth - 4; // small buffer so the digit right at the edge isn't flush against the card border
+      const MIN_PX = 12;
+      let guard = 0;
+      while (el.scrollWidth > maxWidth && guard < 60){
+        const size = parseFloat(getComputedStyle(el).fontSize);
+        if (size <= MIN_PX) break;
+        el.style.fontSize = Math.max(MIN_PX, size - 1) + 'px';
+        guard++;
+      }
+    });
   },
   buildColorRow(){
     const row = document.getElementById('kpi-color-row');
@@ -3234,6 +3258,7 @@ const LayoutMgr = {
     if (LayoutMgr.canvas && LayoutMgr.canvas.classList.contains('stacked-mode')) return;
     const wrap = document.getElementById('widget-kpis');
     if (!wrap) return;
+    if (typeof KpiMgr !== "undefined") KpiMgr.fitValueText(); // card width may have changed — re-fit number sizes before measuring height
     const g = App.layout.kpis;
     const actual = Math.ceil(wrap.getBoundingClientRect().height);
     const d = LayoutMgr.DEFAULTS.kpis;
