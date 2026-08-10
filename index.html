@@ -1333,12 +1333,38 @@ const App = {
 function nextId(prefix){ return prefix + (App.idSeq++); }
 
 const Utils = {
+  // Strips thousands separators, currency symbols (₹ $ € £), a trailing %, surrounding
+  // whitespace, and accounting-style negative parentheses "(123)" -> "-123" — this is what the
+  // Google Sheets gviz CSV fallback (used when the full-workbook xlsx export fails/hiccups)
+  // actually sends: the FORMATTED display text of each cell, not the raw number. Without this,
+  // plain parseFloat("1,234.56") silently returns 1, and parseFloat("₹1,234.56") returns NaN,
+  // which is why sums/averages/KPIs/charts/tables could come out far lower than the sheet or
+  // have numeric columns misdetected as text entirely.
+  cleanNumStr(v){
+    let s = String(v).trim();
+    if (!s) return s;
+    let neg = false;
+    if (/^\(.*\)$/.test(s)){ neg = true; s = s.slice(1, -1); }
+    s = s.replace(/[₹$€£,\s]/g, '').replace(/%$/, '');
+    if (neg && s && s[0] !== '-') s = '-' + s;
+    return s;
+  },
   isNumeric(v){
     if (v === null || v === undefined || v === '') return false;
     if (typeof v === 'number') return isFinite(v);
-    return !isNaN(parseFloat(v)) && isFinite(parseFloat(v));
+    const cleaned = Utils.cleanNumStr(v);
+    if (!cleaned) return false;
+    const n = parseFloat(cleaned);
+    return !isNaN(n) && isFinite(n);
   },
-  toNum(v){ const n = typeof v === 'number' ? v : parseFloat(v); return isNaN(n) ? null : n; },
+  toNum(v){
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    const cleaned = Utils.cleanNumStr(v);
+    if (!cleaned) return null;
+    const n = parseFloat(cleaned);
+    return isNaN(n) ? null : n;
+  },
   toDate(v){
     if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
     if (typeof v === 'number') { const d = new Date(Math.round((v - 25569) * 86400 * 1000)); return isNaN(d.getTime()) ? null : d; }
@@ -1923,7 +1949,7 @@ const DataMgr = {
     if (!cf) return null;
     if (cf.range){
       const { lo, hi, last } = cf.range;
-      return row => { const v = Number(row[cf.column]); return !isNaN(v) && v >= lo && (last ? v <= hi : v < hi); };
+      return row => { const v = Utils.toNum(row[cf.column]); return v !== null && v >= lo && (last ? v <= hi : v < hi); };
     }
     return row => {
       const v = row[cf.column];
@@ -2143,7 +2169,7 @@ const CalcFieldMgr = {
     let expr = String(formula || '');
     Object.keys(row).sort((a,b) => b.length - a.length).forEach(col => {
       const re = new RegExp(col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-      const n = Number(row[col]); expr = expr.replace(re, `(${isNaN(n) ? 0 : n})`);
+      const n = Utils.toNum(row[col]); expr = expr.replace(re, `(${n === null ? 0 : n})`);
     });
     if (!/^[\d+\-*/().\s]*$/.test(expr) || !expr.trim()) return null; // reject anything non-arithmetic
     try { return Function('"use strict"; return (' + expr + ');')(); } catch(e){ return null; }
@@ -2878,7 +2904,7 @@ const ChartMgr = {
   // Histogram: bins a numeric X field into equal-width ranges and counts (or aggregates Y within)
   // each bin — the one type here that doesn't bucket by a categorical X value.
   buildHistogram(rows, xCol, yCol, agg, binsCount){
-    const nums = rows.map(r => Number(r[xCol])).filter(v => !isNaN(v));
+    const nums = rows.map(r => Utils.toNum(r[xCol])).filter(v => v !== null);
     if (!nums.length) return { labels: [], series: [{ name: yCol || 'Count', data: [] }], bounds: [] };
     const min = Math.min(...nums), max = Math.max(...nums);
     const bins = (binsCount && binsCount >= 2) ? binsCount : Math.max(5, Math.min(20, Math.ceil(Math.sqrt(nums.length))));
@@ -2887,7 +2913,7 @@ const ChartMgr = {
     const labels = bounds.map(b => `${Utils.formatValue(b.lo, 'decimal')}–${Utils.formatValue(b.hi, 'decimal')}`);
     const buckets = Array.from({ length: bins }, () => []);
     rows.forEach(r => {
-      const v = Number(r[xCol]); if (isNaN(v)) return;
+      const v = Utils.toNum(r[xCol]); if (v === null) return;
       let idx = Math.floor((v - min) / width); if (idx >= bins) idx = bins - 1; if (idx < 0) idx = 0;
       buckets[idx].push(r);
     });
@@ -2926,10 +2952,10 @@ const ChartMgr = {
     return groups.map(g => {
       const subset = groupCol ? rows.filter(r => r[groupCol] === g) : rows;
       const data = subset.map(r => {
-        const x = Number(r[xCol]), y = Number(r[yCol]);
-        if (isNaN(x) || isNaN(y)) return null;
+        const x = Utils.toNum(r[xCol]), y = Utils.toNum(r[yCol]);
+        if (x === null || y === null) return null;
         const pt = { x, y, _rawX: r[xCol] };
-        if (needsSize && sizeCol){ const rv = Number(r[sizeCol]); pt.r = isNaN(rv) ? 6 : Math.max(3, Math.min(30, rv)); }
+        if (needsSize && sizeCol){ const rv = Utils.toNum(r[sizeCol]); pt.r = rv === null ? 6 : Math.max(3, Math.min(30, rv)); }
         return pt;
       }).filter(Boolean);
       return { name: g === null ? yCol : String(g), data };
