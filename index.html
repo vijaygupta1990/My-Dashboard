@@ -985,12 +985,13 @@ service cloud.firestore {
           <input class="form-control form-control-sm mb-2" id="table-name" placeholder="e.g. Transactions" required="">
           <label class="form-label mini">Columns to Display <span class="text-slate-soft" style="text-transform:none; font-weight:400;">(drag chips to set column order)</span></label>
           <div id="table-col-picker" class="filter-chip-group mb-2"></div>
-          <label class="form-label mini">Cell Number Format</label>
-          <select class="form-select form-select-sm mb-2" id="table-numfmt">
-            <option value="none">Raw value (as uploaded)</option>
-            <option value="number">Rounded number (Indian grouping)</option>
-            <option value="currency">Currency (₹ INR, rounded)</option>
-          </select>
+          <div id="table-colsettings-wrap" class="d-none">
+            <label class="form-label mini">Column Settings <span class="text-slate-soft" style="text-transform:none; font-weight:400;">(aggregation + number format — set independently per column)</span></label>
+            <div class="d-flex small text-slate-soft mb-1" style="font-size:.68rem;">
+              <div class="col-4">Column</div><div class="col-4">Footer aggregation</div><div class="col-4">Number format</div>
+            </div>
+            <div id="table-colsettings" class="mb-2" style="max-height:220px; overflow-y:auto;"></div>
+          </div>
           <div class="d-none" id="table-dateagg-row">
             <label class="form-label mini">Date Format</label>
             <select class="form-select form-select-sm mb-2" id="table-dateagg">
@@ -1002,11 +1003,6 @@ service cloud.firestore {
               <option value="monthyear">Month &amp; Year</option>
             </select>
           </div>
-          <label class="form-label mini">Footer Calculations (numeric columns)</label>
-          <select class="form-select form-select-sm mb-2" id="table-footer-calc">
-            <option value="none">None</option><option value="sum">Sum</option><option value="avg">Average</option>
-            <option value="count">Count</option><option value="min">Minimum</option><option value="max">Maximum</option>
-          </select>
           <div class="d-flex flex-wrap gap-3 mb-2">
             <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="table-sort" checked=""><label class="form-check-label small">Sorting</label></div>
             <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="table-search" checked=""><label class="form-check-label small">Searching</label></div>
@@ -1292,11 +1288,14 @@ const Utils = {
   },
   formatValue(value, format){
     if (value === null || value === undefined || isNaN(value)) return '—';
-    const rounded = Math.round(Number(value));
+    const num = Number(value);
     switch(format){
-      case 'currency': return '₹' + rounded.toLocaleString('en-IN');
-      case 'percentage': return rounded.toLocaleString('en-IN') + '%';
-      default: return rounded.toLocaleString('en-IN');
+      case 'currency': return '₹' + Math.round(num).toLocaleString('en-IN');
+      case 'percentage': return Math.round(num).toLocaleString('en-IN') + '%';
+      case 'integer': return Math.round(num).toLocaleString('en-IN');
+      case 'decimal': return num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      case 'number': return num.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+      default: return Math.round(num).toLocaleString('en-IN');
     }
   },
   aggregateNumeric(rows, column, agg){
@@ -1743,8 +1742,14 @@ const DataMgr = {
     App.filteredCache = null;
     App.columnTypes = {};
     App.columns.forEach(c => App.columnTypes[c] = DataMgr.detectType(c));
-    if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
+    // Calculated fields must be re-applied BEFORE the drift check below: CalcFieldMgr.applyAll()
+    // appends each calc field's name onto App.columns. If reconcileColumnDrift ran first, it would
+    // compare prevColumns (which included last cycle's calc field names) against a newColumns that
+    // doesn't have them yet — reading every calculated field as a column the sheet "removed", and
+    // permanently deleting any filter/table/chart/KPI built on one. That was the actual cause of
+    // calculated fields "disappearing" on refresh even though the formulas themselves were fine.
     CalcFieldMgr.applyAll();
+    if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
     UI.renderUploadSummary();
     UI.populateAllColumnSelectors();
     UI.refreshAll();
@@ -1778,8 +1783,12 @@ const DataMgr = {
     App.data = rows; App.columns = Object.keys(rows[0]); App.columnTypes = {};
     App.columns.forEach(c => App.columnTypes[c] = DataMgr.detectTypeFor(rows, c));
     App.filteredCache = null; App.uploadDate = new Date();
-    if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
+    // Same ordering fix as loadSheet(): re-apply calculated fields BEFORE checking for column
+    // drift, so their column names are already present in newColumns and never get misread as
+    // columns the sheet "removed" — which was silently deleting filters/table columns/chart axes/
+    // KPIs built on a calculated field every single refresh.
     CalcFieldMgr.applyAll();
+    if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
     UI.renderUploadSummary(); UI.populateAllColumnSelectors(); UI.refreshAll();
     if (!opts.silent) Utils.toast(`Combined sheets — ${rows.length.toLocaleString()} rows, ${App.columns.length} columns.`);
     return true;
@@ -2467,8 +2476,6 @@ const TableMgr = {
     if (!t) return;
     App.editId.table = id;
     document.getElementById('table-name').value = t.name;
-    document.getElementById('table-footer-calc').value = t.footerCalc;
-    document.getElementById('table-numfmt').value = t.numFmt || 'none';
     document.getElementById('table-dateagg').value = t.dateAgg || 'none';
     document.getElementById('table-sort').checked = t.sort;
     document.getElementById('table-search').checked = t.search;
@@ -2480,6 +2487,7 @@ const TableMgr = {
     });
     picker.querySelectorAll('.filter-chip').forEach(chip => chip.classList.toggle('active', t.columns.includes(chip.dataset.c)));
     UI.applyTableDateAggVisibility();
+    UI.renderTableColumnSettings();
     UI.switchSidebarTab('pane-table');
     document.querySelector('#table-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-check"></i> Update Table';
   },
@@ -2487,6 +2495,7 @@ const TableMgr = {
     App.editId.table = null; document.getElementById('table-form').reset();
     document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active'));
     UI.applyTableDateAggVisibility();
+    UI.renderTableColumnSettings();
     document.querySelector('#table-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-plus"></i> Add Table';
   },
   renderTable(id){
@@ -2510,8 +2519,15 @@ const TableMgr = {
 
     if (App.tableInstances[id]) { App.tableInstances[id].destroy(); }
 
-    const numFmt = cfg.numFmt && cfg.numFmt !== 'none' ? cfg.numFmt : null;
     const dateFmt = cfg.dateAgg && cfg.dateAgg !== 'none' ? cfg.dateAgg : null;
+    // Per-column format: an explicit cfg.columnSettings[c].numFmt wins; otherwise fall back to the
+    // dashboard's old global cfg.numFmt (pre-existing tables saved before per-column settings existed)
+    // so nothing that was already configured silently changes appearance.
+    const colFmt = (c) => {
+      const s = (cfg.columnSettings && cfg.columnSettings[c]) || {};
+      if (s.numFmt && s.numFmt !== 'none') return s.numFmt;
+      return (cfg.numFmt && cfg.numFmt !== 'none') ? cfg.numFmt : null;
+    };
     const columns = cfg.columns.map(c => {
       const isNum = App.columnTypes[c] === 'number';
       const isDate = App.columnTypes[c] === 'date';
@@ -2523,7 +2539,7 @@ const TableMgr = {
             const d = Utils.toDate(data);
             if (d) return dateFmt ? Utils.dateAggLabel(d, dateFmt) : d.toLocaleDateString();
           }
-          if (isNum && numFmt) return Utils.formatValue(data, numFmt);
+          if (isNum){ const fmt = colFmt(c); if (fmt) return Utils.formatValue(data, fmt); }
           if (data instanceof Date) return data.toLocaleDateString();
           return data;
         }
@@ -2533,29 +2549,36 @@ const TableMgr = {
       data: filtered, columns, ordering: cfg.sort, searching: cfg.search, paging: cfg.page,
       pageLength: 10, deferRender: true, scrollX: true,
       language: { emptyTable: 'No matching records' },
-      footerCallback: function(){
-        if (cfg.footerCalc === 'none' || !numericCols.length) return;
-        const api = this.api();
-        const rows = api.rows({ search: 'applied' }).data().toArray();
-      }
+      footerCallback: function(){ /* footer content built manually below, per-column */ }
     });
     App.tableInstances[id] = dt;
 
-    if (cfg.footerCalc !== 'none' && numericCols.length){
+    // Per-column footer aggregation: an explicit cfg.columnSettings[c].agg wins; otherwise fall back
+    // to the dashboard's old global cfg.footerCalc, so pre-existing tables keep showing what they
+    // already showed until someone opts a column into its own setting.
+    const AGG_LABEL = { sum: 'Sum', avg: 'Average', count: 'Count', min: 'Min', max: 'Max' };
+    const colAgg = (c) => {
+      const s = (cfg.columnSettings && cfg.columnSettings[c]) || {};
+      if (s.agg && s.agg !== 'none') return s.agg;
+      return (cfg.footerCalc && cfg.footerCalc !== 'none') ? cfg.footerCalc : null;
+    };
+    const anyFooterAgg = numericCols.some(c => colAgg(c));
+    if (anyFooterAgg){
       const $table = $('#dt-' + id);
       let $tfoot = $table.find('tfoot');
       if (!$tfoot.length){ $tfoot = $('<tfoot><tr></tr></tfoot>').appendTo($table); }
       const $tr = $tfoot.find('tr').length ? $tfoot.find('tr') : $('<tr></tr>').appendTo($tfoot);
       $tr.empty();
       cfg.columns.forEach(c => {
-        if (numericCols.includes(c)){
-          const val = Utils.aggregateNumeric(filtered, c, cfg.footerCalc);
-          $tr.append(`<th>${cfg.footerCalc}: ${Utils.formatValue(val, numFmt || 'number')}</th>`);
+        const agg = numericCols.includes(c) ? colAgg(c) : null;
+        if (agg){
+          const val = Utils.aggregateNumeric(filtered, c, agg);
+          const fmt = colFmt(c) || 'number';
+          $tr.append(`<th>${AGG_LABEL[agg]}: ${Utils.formatValue(val, fmt)}</th>`);
         } else {
           $tr.append('<th></th>');
         }
       });
-      dt.columns().every(function(i){});
     }
 
     const body = container;
@@ -4794,12 +4817,13 @@ const UI = {
     groupSel.innerHTML = '<option value="">None</option>' + App.columns.map(c => `<option value="${Utils.esc(c)}">${Utils.esc(c)}</option>`).join('');
     const picker = document.getElementById('table-col-picker');
     picker.innerHTML = App.columns.map(c => `<span class="filter-chip active" data-c="${Utils.esc(c)}" title="Click to include/exclude · drag to reorder"><i class="fa-solid fa-grip-vertical me-1" style="opacity:.5"></i>${Utils.esc(c)}</span>`).join('');
-    picker.querySelectorAll('.filter-chip').forEach(chip => { chip.addEventListener('click', (e) => { if (!chip.dataset.dragging){ chip.classList.toggle('active'); UI.applyTableDateAggVisibility(); } }); });
+    picker.querySelectorAll('.filter-chip').forEach(chip => { chip.addEventListener('click', (e) => { if (!chip.dataset.dragging){ chip.classList.toggle('active'); UI.applyTableDateAggVisibility(); UI.renderTableColumnSettings(); } }); });
     if (picker._sortable) picker._sortable.destroy();
-    picker._sortable = Sortable.create(picker, { animation:150, ghostClass:'sortable-ghost' });
+    picker._sortable = Sortable.create(picker, { animation:150, ghostClass:'sortable-ghost', onEnd: () => UI.renderTableColumnSettings() });
     UI.populateChartXOrderPicker();
     UI.applyChartDateAggVisibility();
     UI.applyTableDateAggVisibility();
+    UI.renderTableColumnSettings();
   },
   populateChartXOrderPicker(savedOrder){
     const col = document.getElementById('chart-x').value; const picker = document.getElementById('chart-xorder-picker');
@@ -4912,16 +4936,23 @@ const UI = {
       e.preventDefault(); if (App.role !== 'editor') return; if (!App.columns.length){ Utils.toast('Upload data first', true); return; }
       const selectedCols = Array.from(document.querySelectorAll('#table-col-picker .filter-chip.active')).map(c => c.dataset.c);
       if (!selectedCols.length){ Utils.toast('Select at least one column', true); return; }
+      // Each numeric column's own aggregation + number format, read straight from its row in the
+      // Column Settings list — this is what keeps SUM on "Total Sales" independent from AVERAGE on
+      // "Average Price" instead of one setting applying to every column.
+      const columnSettings = {};
+      document.querySelectorAll('#table-colsettings [data-col]').forEach(row => {
+        columnSettings[row.dataset.col] = { agg: row.querySelector('.tcs-agg').value, numFmt: row.querySelector('.tcs-fmt').value };
+      });
       const fields = {
-        name: document.getElementById('table-name').value.trim(), columns: selectedCols, footerCalc: document.getElementById('table-footer-calc').value,
-        numFmt: document.getElementById('table-numfmt').value, dateAgg: document.getElementById('table-dateagg').value, sort: document.getElementById('table-sort').checked, search: document.getElementById('table-search').checked, page: document.getElementById('table-page').checked
+        name: document.getElementById('table-name').value.trim(), columns: selectedCols, columnSettings,
+        dateAgg: document.getElementById('table-dateagg').value, sort: document.getElementById('table-sort').checked, search: document.getElementById('table-search').checked, page: document.getElementById('table-page').checked
       };
       if (App.editId.table){
         const existing = App.tables.find(t => t.id === App.editId.table); Object.assign(existing, fields);
         TableMgr.cancelEdit(); TableMgr.renderList(); TableMgr.renderTable(existing.id); Utils.toast(`Table "${fields.name}" updated`);
       } else {
         const cfg = { id: nextId('tbl'), ...fields }; TableMgr.addTable(cfg); e.target.reset();
-        document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active')); UI.applyTableDateAggVisibility(); Utils.toast(`Table "${cfg.name}" added`);
+        document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active')); UI.applyTableDateAggVisibility(); UI.renderTableColumnSettings(); Utils.toast(`Table "${cfg.name}" added`);
       }
     });
   },
@@ -5000,6 +5031,57 @@ const UI = {
     const activeCols = Array.from(picker.querySelectorAll('.filter-chip.active')).map(c => c.dataset.c);
     const hasDateCol = activeCols.some(c => App.columnTypes[c] === 'date');
     row.classList.toggle('d-none', !hasDateCol);
+  },
+  // Builds the per-column "Footer aggregation / Number format" row list shown under the column
+  // picker in the Table builder — this is what lets SUM apply to "Total Sales" while AVERAGE
+  // applies to "Average Price" in the same table, instead of one setting for every column.
+  // Re-run this any time the active/selected column set changes (chip click, reorder, table
+  // load/reset) so the rows always match what's actually selected.
+  renderTableColumnSettings(){
+    const picker = document.getElementById('table-col-picker');
+    const wrap = document.getElementById('table-colsettings-wrap');
+    const list = document.getElementById('table-colsettings');
+    if (!picker || !wrap || !list) return;
+    const activeCols = Array.from(picker.querySelectorAll('.filter-chip.active')).map(c => c.dataset.c);
+    const numericCols = activeCols.filter(c => App.columnTypes[c] === 'number');
+    if (!numericCols.length){ wrap.classList.add('d-none'); list.innerHTML = ''; return; }
+    wrap.classList.remove('d-none');
+    // Preserve whatever is already on-screen (e.g. the person just toggled a different column's
+    // chip) so re-rendering this list never throws away in-progress choices for columns that stay selected.
+    const current = {};
+    list.querySelectorAll('[data-col]').forEach(row => {
+      current[row.dataset.col] = { agg: row.querySelector('.tcs-agg').value, numFmt: row.querySelector('.tcs-fmt').value };
+    });
+    const editing = App.editId.table ? App.tables.find(t => t.id === App.editId.table) : null;
+    list.innerHTML = numericCols.map(c => {
+      const saved = current[c]
+        || (editing && editing.columnSettings && editing.columnSettings[c])
+        || (editing ? { agg: editing.footerCalc || 'none', numFmt: editing.numFmt || 'none' } : { agg: 'none', numFmt: 'none' });
+      return `
+      <div class="row g-1 align-items-center mb-1" data-col="${Utils.esc(c)}">
+        <div class="col-4 small text-truncate" title="${Utils.esc(c)}">${Utils.esc(c)}</div>
+        <div class="col-4">
+          <select class="form-select form-select-sm tcs-agg">
+            <option value="none" ${saved.agg==='none'?'selected':''}>None</option>
+            <option value="sum" ${saved.agg==='sum'?'selected':''}>Sum</option>
+            <option value="avg" ${saved.agg==='avg'?'selected':''}>Average</option>
+            <option value="count" ${saved.agg==='count'?'selected':''}>Count</option>
+            <option value="min" ${saved.agg==='min'?'selected':''}>Minimum</option>
+            <option value="max" ${saved.agg==='max'?'selected':''}>Maximum</option>
+          </select>
+        </div>
+        <div class="col-4">
+          <select class="form-select form-select-sm tcs-fmt">
+            <option value="none" ${saved.numFmt==='none'?'selected':''}>Raw</option>
+            <option value="number" ${saved.numFmt==='number'?'selected':''}>Number</option>
+            <option value="integer" ${saved.numFmt==='integer'?'selected':''}>Integer</option>
+            <option value="decimal" ${saved.numFmt==='decimal'?'selected':''}>Decimal</option>
+            <option value="currency" ${saved.numFmt==='currency'?'selected':''}>₹ INR</option>
+            <option value="percentage" ${saved.numFmt==='percentage'?'selected':''}>Percentage</option>
+          </select>
+        </div>
+      </div>`;
+    }).join('');
   },
   wireTextboxForm(){
     document.getElementById('textbox-form').addEventListener('submit', e => {
