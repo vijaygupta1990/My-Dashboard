@@ -336,6 +336,21 @@ body.viewer-mode .resize-handle{display:none;}
 .kpi-edit-btn:hover{background:var(--signal); color:#04201F;}
 #widget-kpis .widget-body, #widget-filters .widget-body{overflow:visible; min-height:90px;}
 
+/* ---------- Full-page gates: share password prompt + "link no longer valid" screen ----------
+   Both take over the entire viewport above everything else. While either is active the real app
+   shell is hidden with display:none (not just visually covered), so a locked dashboard's data never
+   sits in the rendered DOM for a curious viewer to inspect before/without entering the password. */
+.full-page-gate{
+  position:fixed; inset:0; z-index:2000; display:flex; align-items:center; justify-content:center;
+  background:var(--bg); padding:1rem;
+}
+.full-page-gate-card{
+  width:100%; max-width:340px; text-align:center; background:var(--card); border:1px solid var(--border);
+  border-radius:var(--radius-md); padding:2rem 1.75rem; box-shadow:var(--shadow-hover);
+}
+.full-page-gate-icon{font-size:1.8rem; color:var(--signal); margin-bottom:.75rem; display:block;}
+body.share-locked-active #app-shell, body.link-invalid-active #app-shell{display:none;}
+
 /* ---------- Filters / Key Metrics containers: always match the Dashboard Title
    container's width and left/right alignment exactly. These two widgets stay
    position:absolute (so the existing drag/resize + overlap-avoidance JS keeps
@@ -686,14 +701,50 @@ html{scroll-behavior:smooth;}
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <p class="text-slate small mb-2">Anyone with this link can view the dashboard and interact with it. Google Sheet connections will pull live data automatically.</p>
+          <p class="text-slate small mb-2">Anyone with this link can view the dashboard — but only after entering the password below. They'll be asked for it every time, on every device; it's never remembered in their browser.</p>
+          <label class="form-label mini">Share password <span class="text-danger">*</span></label>
           <div class="d-flex gap-2">
-            <input type="text" class="form-control form-control-sm mono" id="share-link-input" readonly="">
-            <button class="tb-btn primary" id="share-copy-btn" type="button"><i class="fa-solid fa-copy"></i> Copy</button>
+            <input type="password" class="form-control form-control-sm" id="share-password-input" placeholder="Choose a password" autocomplete="new-password">
+            <button class="tb-btn primary" id="share-generate-btn" type="button"><i class="fa-solid fa-link"></i> Generate Link</button>
           </div>
-          <div id="share-warning" class="text-slate-soft mini mt-2"></div>
+          <div id="share-password-status" class="mini text-slate-soft mt-1 mb-2"></div>
+
+          <div id="share-link-section" class="d-none">
+            <label class="form-label mini">Shareable link</label>
+            <div class="d-flex gap-2">
+              <input type="text" class="form-control form-control-sm mono" id="share-link-input" readonly="">
+              <button class="tb-btn primary" id="share-copy-btn" type="button"><i class="fa-solid fa-copy"></i> Copy</button>
+            </div>
+            <div id="share-warning" class="text-slate-soft mini mt-2"></div>
+          </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- =================== SHARE LINK PASSWORD GATE (full-page, non-dismissable) ===================
+       Shown before ANY content of a password-protected shared dashboard is rendered. Nothing about
+       a successful unlock is ever saved (no storage of any kind) — it only lives in this page's
+       JS memory, so a refresh, a new tab, or reopening the link later always asks again. -->
+  <div id="share-password-gate" class="full-page-gate d-none">
+    <div class="full-page-gate-card">
+      <i class="fa-solid fa-lock full-page-gate-icon"></i>
+      <h5 class="font-display mb-1">Password required</h5>
+      <p class="text-slate-soft small mb-3">This dashboard is password protected. Enter the password to view it.</p>
+      <input type="password" id="share-gate-pass-input" class="form-control form-control-sm mb-2" placeholder="Password" autocomplete="off">
+      <button class="tb-btn primary w-100" id="share-gate-submit-btn" type="button">Unlock</button>
+      <div id="share-gate-error" class="text-danger mini mt-2"></div>
+    </div>
+  </div>
+
+  <!-- =================== SHARED LINK NO LONGER VALID (full-page) ===================
+       Shown instead of the dashboard when a "?d=" link's dashboard has been deleted (or otherwise
+       cannot be resolved) — a dead share link must never fall back to a blank editable dashboard. -->
+  <div id="link-invalid-screen" class="full-page-gate d-none">
+    <div class="full-page-gate-card">
+      <i class="fa-solid fa-triangle-exclamation full-page-gate-icon"></i>
+      <h5 class="font-display mb-1">Dashboard not found</h5>
+      <p class="text-slate-soft small mb-0">This shared link is no longer valid. The dashboard it pointed to has been deleted or is no longer available.</p>
     </div>
   </div>
 
@@ -1259,7 +1310,9 @@ const App = {
     version: '2.0',
     ownerUid: null,
     createdAt: null,
-    updatedAt: null
+    updatedAt: null,
+    sharePasswordHash: null,   // SHA-256(salt + ':' + password) — set from the Share modal, required before a link can be generated
+    sharePasswordSalt: null
   },
   settings: {                   // Application Settings (item #8)
     githubRepoUrl: '',
@@ -3812,7 +3865,13 @@ const ShareMgr = {
       dataSource: App.dataSource, autoRefreshInterval: App.autoRefreshInterval,
       // Multi-sheet data-source configuration (which tabs, how they're joined, calculated fields) —
       // needed so this self-contained fallback link rebuilds the same data model as the cloud path.
-      selectedSheets: App.selectedSheets, relationships: App.relationships, calcFields: App.calcFields, gsheetMeta: App.gsheetMeta
+      selectedSheets: App.selectedSheets, relationships: App.relationships, calcFields: App.calcFields, gsheetMeta: App.gsheetMeta,
+      // Share password (hash + salt only, never the plaintext) — see SharePasswordMgr. This link is
+      // entirely self-contained (no server to ask), so this is the same "cosmetic, client-side"
+      // protection as the cloud path: it still requires a fresh, unsaved password entry on every
+      // open, it just can't stop someone from reading the URL's own payload directly.
+      sharePasswordHash: App.dashboardMeta.sharePasswordHash || null,
+      sharePasswordSalt: App.dashboardMeta.sharePasswordSalt || null
     };
     
     // For Google Sheets, never embed the data. The viewer should fetch it live.
@@ -3845,12 +3904,48 @@ const ShareMgr = {
       App.autoRefreshInterval = cfg.autoRefreshInterval || 0;
       App.selectedSheets = cfg.selectedSheets || []; App.relationships = cfg.relationships || []; App.calcFields = cfg.calcFields || [];
       App.gsheetMeta = cfg.gsheetMeta || { id: null, kind: null, gid: null };
+      // Carry the share password (if any) into dashboardMeta so the same gate/verify path used for
+      // the cloud "?d=" flow also locks this self-contained "#state=" link.
+      App.dashboardMeta.sharePasswordHash = cfg.sharePasswordHash || null;
+      App.dashboardMeta.sharePasswordSalt = cfg.sharePasswordSalt || null;
 
       if (cfg.data && cfg.data.length){
         App.data = cfg.data; App.columns = cfg.columns || Object.keys(cfg.data[0] || {}); App.columnTypes = cfg.columnTypes || {};
       } else if (cfg.columns){ App.columns = cfg.columns; App.columnTypes = cfg.columnTypes || {}; }
       return true;
     } catch (err){ console.error('Could not load shared dashboard state', err); Utils.toast('This share link looks corrupted or out of date', true); return false; }
+  }
+};
+
+// Hashes the per-dashboard share password (SHA-256 + random salt) so the plaintext password is never
+// written to Firestore, a share link, or anywhere else. IMPORTANT — same honest caveat as the rest of
+// this app's "Admin Protection" (see Application Settings → Firestore Security Rules note): this is a
+// client-side gate, not server-enforced encryption. On the cloud "?d=" path the hash lives in a
+// Firestore doc anyone with the link can read, and on the self-contained "#state=" path the hash
+// travels in the URL itself — so it stops casual/opportunistic access (and satisfies "ask for the
+// password every time, never remember it"), but it cannot stop someone who reads the page's own
+// source/network traffic. There is no way around that on a static, serverless host without adding a
+// real backend.
+const SharePasswordMgr = {
+  async sha256Hex(text){
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  },
+  randomSaltHex(){
+    const arr = new Uint8Array(16); crypto.getRandomValues(arr);
+    return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+  },
+  // Sets (or changes) the password on App.dashboardMeta in memory — caller is responsible for
+  // persisting it (ProjectMgr.save / ShareMgr link generation).
+  async setPassword(plaintext){
+    const salt = SharePasswordMgr.randomSaltHex();
+    App.dashboardMeta.sharePasswordHash = await SharePasswordMgr.sha256Hex(salt + ':' + plaintext);
+    App.dashboardMeta.sharePasswordSalt = salt;
+  },
+  async verify(attempt, storedHash, storedSalt){
+    if (!storedHash) return true; // nothing to protect against
+    const attemptHash = await SharePasswordMgr.sha256Hex((storedSalt || '') + ':' + attempt);
+    return attemptHash === storedHash;
   }
 };
 
@@ -4032,7 +4127,11 @@ const CloudMgr = {
   async loadDashboard(id){
     if (!CloudMgr.ready) throw new Error('Cloud Sync is not set up yet');
     const snap = await window.fb.getDoc(window.fb.doc(CloudMgr.db, 'dashboards', id));
-    if (!snap.exists()) throw new Error('Dashboard not found in the cloud');
+    if (!snap.exists()){
+      // Tagged with .code so callers (ProjectMgr.loadById) can tell "confirmed deleted" apart from
+      // a network/offline failure — a deleted dashboard must never fall back to a stale local copy.
+      const err = new Error('Dashboard not found in the cloud'); err.code = 'not-found'; throw err;
+    }
     return snap.data();
   },
   async listDashboards(){
@@ -4156,10 +4255,27 @@ const ProjectMgr = {
     UI.reflectCloudStatus();
     return { id: App.dashboardId, cloudSaved };
   },
-  async loadById(id){
+  // opts.isShareLink: true when this load is for a "?d=" shared link being opened by a viewer
+  // (as opposed to the owner reopening their own dashboard from Manage Dashboards). It changes
+  // exactly one thing: if the cloud confirms the dashboard was deleted, a share link stops right
+  // there instead of quietly falling back to a possibly-stale offline copy — which is what makes
+  // deleting a dashboard actually invalidate every link to it, immediately, everywhere.
+  async loadById(id, opts={}){
+    const isShareLink = !!opts.isShareLink;
     if (CloudMgr.ready){
       try { const payload = await CloudMgr.loadDashboard(id); App.dashboardId = id; ProjectMgr.applyPayload(payload); return true; }
-      catch(e){ console.warn('Cloud load failed, trying local cache', e); }
+      catch(e){
+        if (e && e.code === 'not-found'){
+          // Self-heal: purge any leftover local/Claude-Sync copies of this id so nothing on this
+          // browser can resurrect a dashboard the cloud says is gone (e.g. via Manage Dashboards'
+          // offline fallback list, or a later retry of this same link).
+          LocalCache.delete(id);
+          if (ClaudeSyncMgr.available()){ try { await ClaudeSyncMgr.delete(id); } catch(err){} }
+          if (isShareLink) return false;
+        } else {
+          console.warn('Cloud load failed, trying local cache', e);
+        }
+      }
     }
     if (ClaudeSyncMgr.available()){
       try {
@@ -4329,60 +4445,134 @@ const UI = {
     // plain open starts a fresh, blank dashboard builder. A previously saved dashboard can still
     // be reopened, but only via an explicit action (a share link, or picking it from "Manage
     // Dashboards"), never automatically on load.
+    //
+    // `isShareLink: true` is what makes deletion actually invalidate a "?d=" link: once the cloud
+    // confirms the dashboard doc is gone, ProjectMgr.loadById will NOT fall back to a possibly-stale
+    // local/offline copy of it — it returns false, and below that always means "show the dashboard
+    // is gone" screen for a share link, never a blank editable dashboard (which would have quietly
+    // let anyone treat a dead link as a fresh canvas).
     let restored = false;
     if (dashId){
-      restored = await ProjectMgr.loadById(dashId);
-      if (!restored) Utils.toast('That dashboard link could not be found. Showing a blank dashboard instead.', true);
+      restored = await ProjectMgr.loadById(dashId, { isShareLink: true });
+      if (!restored){ UI.showLinkInvalid(); return; }
     } else if (legacyShared){
       restored = true;
     }
 
-    if (restored){
-      ThemeMgr.apply(App.theme);
-      if (App.themeAccent) ThemeMgr.applyAccent(App.themeAccent, { silent: true });
-      if (App.bgColor) ThemeMgr.applyBg(App.bgColor);
-      UI.applyTitleToDom();
-
-      const autoRefSel = document.getElementById('auto-refresh-select');
-      if (autoRefSel) autoRefSel.value = App.autoRefreshInterval || 0;
-      const gu = document.getElementById('gsheet-url'); if (gu) gu.value = (App.dataSource && App.dataSource.gsheetUrl) || '';
-
-      // Never require a manual reconnect: paint cached data instantly, then refresh live from the Sheet in the background.
-      if (App.data && App.data.length) {
-        UI.renderUploadSummary(); UI.populateAllColumnSelectors(); UI.refreshAll(); UI.renderDataSourceStatus();
-        if (App.dataSource && App.dataSource.type === 'gsheet' && App.dataSource.gsheetUrl){
-          const id = DataMgr.extractSheetId(App.dataSource.gsheetUrl);
-          if (id) DataMgr.fetchGoogleSheet(id, App.dataSource.gid, { initial: false }).catch(()=>{});
-        }
-      } else if (App.dataSource && App.dataSource.type === 'gsheet' && App.dataSource.gsheetUrl) {
-        UI.renderDataSourceStatus();
-        DataMgr.fetchGoogleSheet(DataMgr.extractSheetId(App.dataSource.gsheetUrl), App.dataSource.gid, { initial: false });
-      } else {
-        UI.populateAllColumnSelectors();
-        UI.refreshAll();
-      }
-
-      PageMgr.renderTabs();
-      UI.initAutoRefreshTimer();
-
-      KpiMgr.renderList(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList();
-      App.tables.forEach(t => LayoutMgr.addWidget('table', t.id, t.name)); App.charts.forEach(c => LayoutMgr.addWidget('chart', c.id, c.title));
-      (App.textboxes || []).forEach(t => { LayoutMgr.addWidget('textbox', t.id, t.title); TextBoxMgr.wireContentEditable(t.id); });
-      LayoutMgr.restoreLayout();
-
-      Utils.toast((dashId || legacyShared) ? 'Viewing a shared dashboard' : 'Restored your dashboard');
+    // Shared links (dashId, or the legacy self-contained "#state=" link) that were saved with a
+    // password must ask for it — every single time, on every device/tab/refresh. Nothing about a
+    // correct entry is ever written to localStorage/sessionStorage/cookies/IndexedDB, so there is
+    // no "remembered" state to expire or log out of: a fresh page load always means a fresh prompt.
+    // The owner (already signed in and resolved to role 'editor' above) always skips this.
+    const isLocked = restored && App.role === 'viewer' && App.dashboardMeta && App.dashboardMeta.sharePasswordHash;
+    if (isLocked){
+      UI.showSharePasswordGate(() => {
+        UI.finishRestoredInit(dashId, legacyShared);
+        PermissionMgr.apply(App.role);
+        UI.updateAuthUI();
+      });
+    } else if (restored){
+      UI.finishRestoredInit(dashId, legacyShared);
+      PermissionMgr.apply(App.role);
+      UI.updateAuthUI();
     } else {
       if (App.settings.companyName) App.title.company = App.settings.companyName;
       ThemeMgr.apply(App.settings.defaultTheme || 'system');
       UI.applyTitleToDom();
+      PermissionMgr.apply(App.role);
+      UI.updateAuthUI();
     }
-
-    PermissionMgr.apply(App.role);
-    UI.updateAuthUI();
 
     if (window.__launcherRedirectSkipped){
       Utils.toast('Opened locally — could not redirect to GitHub Pages: ' + window.__launcherRedirectSkipped + ' Fix the URL in ⚙ Application Settings, or switch to Offline mode there.', true, 9000);
     }
+  },
+
+  // Builds out the DOM for a successfully-loaded dashboard (cloud/local/legacy-link). Split out of
+  // init() so the password gate can defer this — and everything it renders (data, KPI values, table
+  // rows, chart series) — until AFTER a correct password is entered, instead of painting the real
+  // content behind an overlay where it would still sit in the DOM for anyone to inspect.
+  finishRestoredInit(dashId, legacyShared){
+    ThemeMgr.apply(App.theme);
+    if (App.themeAccent) ThemeMgr.applyAccent(App.themeAccent, { silent: true });
+    if (App.bgColor) ThemeMgr.applyBg(App.bgColor);
+    UI.applyTitleToDom();
+
+    const autoRefSel = document.getElementById('auto-refresh-select');
+    if (autoRefSel) autoRefSel.value = App.autoRefreshInterval || 0;
+    const gu = document.getElementById('gsheet-url'); if (gu) gu.value = (App.dataSource && App.dataSource.gsheetUrl) || '';
+
+    // Never require a manual reconnect: paint cached data instantly, then refresh live from the Sheet in the background.
+    if (App.data && App.data.length) {
+      UI.renderUploadSummary(); UI.populateAllColumnSelectors(); UI.refreshAll(); UI.renderDataSourceStatus();
+      if (App.dataSource && App.dataSource.type === 'gsheet' && App.dataSource.gsheetUrl){
+        const id = DataMgr.extractSheetId(App.dataSource.gsheetUrl);
+        if (id) DataMgr.fetchGoogleSheet(id, App.dataSource.gid, { initial: false }).catch(()=>{});
+      }
+    } else if (App.dataSource && App.dataSource.type === 'gsheet' && App.dataSource.gsheetUrl) {
+      UI.renderDataSourceStatus();
+      DataMgr.fetchGoogleSheet(DataMgr.extractSheetId(App.dataSource.gsheetUrl), App.dataSource.gid, { initial: false });
+    } else {
+      UI.populateAllColumnSelectors();
+      UI.refreshAll();
+    }
+
+    PageMgr.renderTabs();
+    UI.initAutoRefreshTimer();
+
+    KpiMgr.renderList(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList();
+    App.tables.forEach(t => LayoutMgr.addWidget('table', t.id, t.name)); App.charts.forEach(c => LayoutMgr.addWidget('chart', c.id, c.title));
+    (App.textboxes || []).forEach(t => { LayoutMgr.addWidget('textbox', t.id, t.title); TextBoxMgr.wireContentEditable(t.id); });
+    LayoutMgr.restoreLayout();
+
+    Utils.toast((dashId || legacyShared) ? 'Viewing a shared dashboard' : 'Restored your dashboard');
+  },
+
+  // Full-page takeover shown when a "?d=" link points at a dashboard that no longer exists (deleted
+  // from Manage Dashboards) or otherwise could not be resolved. Replaces the entire app UI so a dead
+  // link can never fall through to an editable blank canvas or leave stale content on screen.
+  showLinkInvalid(){
+    document.body.classList.add('link-invalid-active');
+    const screen = document.getElementById('link-invalid-screen');
+    if (screen) screen.classList.remove('d-none');
+  },
+
+  // Full-page, non-dismissable password prompt shown before a password-protected shared dashboard is
+  // rendered. `onSuccess` runs only after a correct password is verified; nothing about the entry or
+  // the unlocked state is ever persisted (no localStorage/sessionStorage/cookie), so it lives only in
+  // this page's memory — a refresh, a new tab, or reopening the link later always asks again.
+  showSharePasswordGate(onSuccess){
+    document.body.classList.add('share-locked-active');
+    const screen = document.getElementById('share-password-gate');
+    const input = document.getElementById('share-gate-pass-input');
+    const err = document.getElementById('share-gate-error');
+    const btn = document.getElementById('share-gate-submit-btn');
+    if (!screen || !input || !btn) { onSuccess(); return; } // markup missing — fail open rather than hard-lock the app
+    screen.classList.remove('d-none');
+    err.textContent = '';
+    input.value = '';
+    setTimeout(() => input.focus(), 50);
+
+    let checking = false;
+    const attempt = async () => {
+      if (checking) return;
+      const pass = input.value;
+      if (!pass){ err.textContent = 'Enter the password.'; return; }
+      checking = true; btn.disabled = true; btn.textContent = 'Checking…';
+      const ok = await SharePasswordMgr.verify(pass, App.dashboardMeta.sharePasswordHash, App.dashboardMeta.sharePasswordSalt);
+      checking = false; btn.disabled = false; btn.textContent = 'Unlock';
+      if (ok){
+        screen.classList.add('d-none');
+        document.body.classList.remove('share-locked-active');
+        input.value = ''; // never let the entered password linger in the DOM either
+        onSuccess();
+      } else {
+        err.textContent = 'Incorrect password. Try again.';
+        input.value = ''; input.focus();
+      }
+    };
+    btn.onclick = attempt;
+    input.onkeydown = (e) => { if (e.key === 'Enter') attempt(); };
   },
 
   // Best-effort check so a broken/undeployed GitHub Pages URL is caught here, not discovered later
@@ -4478,7 +4668,7 @@ const UI = {
       sheetNames: [], workbookRef: null, pages: [], currentPageId: 'page1',
       sheetTables: {}, selectedSheets: [], relationships: [], calcFields: [], gsheetMeta: { id:null, kind:null, gid:null },
       crossFilter: null, dataSource: { type: null, gsheetUrl: null, gsheetName: null, gid: null }, fileHandle: null, autoRefreshInterval: 0,
-      dashboardId: null, dashboardMeta: { name: 'Untitled Dashboard', description: '', version: '2.0', ownerUid: null, createdAt: null, updatedAt: null }
+      dashboardId: null, dashboardMeta: { name: 'Untitled Dashboard', description: '', version: '2.0', ownerUid: null, createdAt: null, updatedAt: null, sharePasswordHash: null, sharePasswordSalt: null }
     });
 
     document.getElementById('auto-refresh-select').value = '0';
@@ -4497,11 +4687,37 @@ const UI = {
 
   wireShare(){
     const btn = document.getElementById('tb-share-btn'); if (!btn) return;
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       if (App.role !== 'editor') return;
       if (!App.data.length && App.dataSource.type !== 'gsheet'){ Utils.toast('Upload data before sharing the dashboard', true); return; }
+      // Reset the modal to "set/confirm password" state every time it's opened — the link from a
+      // previous share is not shown until a password is (re)confirmed via Generate Link, so nobody
+      // can accidentally hand out an unprotected link.
+      document.getElementById('share-password-input').value = '';
+      document.getElementById('share-link-section').classList.add('d-none');
+      document.getElementById('share-link-input').value = '';
+      const statusEl = document.getElementById('share-password-status');
+      statusEl.className = 'mini text-slate-soft mt-1 mb-2';
+      statusEl.textContent = App.dashboardMeta.sharePasswordHash
+        ? 'A password is already set for this link. Leave blank to keep it, or enter a new one to change it — then click Generate Link.'
+        : 'Required — viewers must enter this password every time they open the shared link.';
+      bootstrap.Modal.getOrCreateInstance(document.getElementById('share-modal')).show();
+    });
+
+    document.getElementById('share-generate-btn').addEventListener('click', async () => {
+      const pwInput = document.getElementById('share-password-input');
+      const pass = pwInput.value;
+      const statusEl = document.getElementById('share-password-status');
+      const hadPasswordAlready = !!App.dashboardMeta.sharePasswordHash;
+      if (!pass && !hadPasswordAlready){
+        statusEl.className = 'mini text-danger mt-1 mb-2';
+        statusEl.textContent = 'Enter a password — shared links must be password protected.';
+        pwInput.focus();
+        return;
+      }
       const warn = document.getElementById('share-warning');
       Utils.toast('Preparing your share link…');
+      if (pass) await SharePasswordMgr.setPassword(pass); // new/changed password — updates App.dashboardMeta in memory
       // Always (re)save before sharing, and — critically — branch on whether that save actually
       // reached Firestore (cloudSaved), never on CloudMgr.ready alone. CloudMgr.ready only tells
       // us Firebase initialized; it says nothing about whether this particular write succeeded.
@@ -4512,12 +4728,15 @@ const UI = {
       if (cloudSaved){
         const link = location.origin + location.pathname + '?d=' + encodeURIComponent(id) + '&role=viewer';
         document.getElementById('share-link-input').value = link;
-        warn.textContent = 'Live link — always shows your latest saved version, and pulls fresh Google Sheet data automatically. Works for anyone, on any browser or device, independent of this computer.';
+        warn.textContent = 'Live, password-protected link — always shows your latest saved version, and pulls fresh Google Sheet data automatically. Works for anyone, on any browser or device, independent of this computer.';
       } else {
         // Self-contained fallback: the entire dashboard configuration (and, for non-Sheet sources,
         // the data itself) travels inside the link's own URL hash. It does not read or write
         // Firestore, ClaudeSync, or this browser's localStorage — so it is just as isolated and
-        // just as portable to another browser/device as a working cloud link would be.
+        // just as portable to another browser/device as a working cloud link would be. The password
+        // hash travels in the URL too, so the same "ask every time" gate still applies here, though
+        // it can't stop someone from reading the page's own data directly out of the URL — see the
+        // caveat on SharePasswordMgr above.
         const { link, truncated, sizeKB } = ShareMgr.generateLink();
         document.getElementById('share-link-input').value = link;
         warn.textContent = (truncated
@@ -4527,8 +4746,12 @@ const UI = {
             ? 'Cloud Sync save failed, so this self-contained link was used instead — it will still open correctly on any device, since everything it needs travels in the link itself. Check ⚙ Application Settings → Cloud Sync (and your Firestore rules) to enable live cloud links.'
             : 'This self-contained link works on any device — set up Cloud Sync in ⚙ Application Settings for a live, always-current link instead.');
       }
-      bootstrap.Modal.getOrCreateInstance(document.getElementById('share-modal')).show();
+      document.getElementById('share-link-section').classList.remove('d-none');
+      statusEl.className = 'mini text-slate-soft mt-1 mb-2';
+      statusEl.textContent = 'Password protection is ON for this link.';
+      pwInput.value = ''; // never leave the plaintext sitting in the form
     });
+
     document.getElementById('share-copy-btn').addEventListener('click', () => {
       const input = document.getElementById('share-link-input'); input.select();
       navigator.clipboard?.writeText(input.value).then(() => Utils.toast('Link copied to clipboard'), () => document.execCommand('copy'));
