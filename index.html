@@ -329,7 +329,7 @@ body.viewer-mode .resize-handle{display:none;}
   font-family:var(--font-mono); font-weight:800; line-height:1; margin:.1rem 0; letter-spacing:-.01em;
   color:var(--ink);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; width:100%;
-  font-size:clamp(28px, 4.2vw, 60px);
+  font-size:40px;
 }
 .kpi-card .kpi-trend{font-size:.74rem; font-weight:600; display:flex; align-items:center; gap:.25rem;}
 .kpi-card .kpi-trend.up{color:#1FAF6B;}
@@ -358,7 +358,7 @@ body.viewer-mode .resize-handle{display:none;}
 .kpi-format-toggle button:not(.active):hover{color:var(--ink);}
 
 @media (max-width:576px){
-  .kpi-card .kpi-value{font-size:clamp(24px, 8vw, 36px);}
+  .kpi-card .kpi-value{font-size:26px;}
 }
 
 /* ---------- Full-page gates: share password prompt + "link no longer valid" screen ----------
@@ -1007,10 +1007,10 @@ service cloud.firestore {
             <div class="col-4">
               <label class="form-label mini">Font Size</label>
               <select class="form-select form-select-sm" id="kpi-fontsize">
-                <option value="clamp(24px, 3.2vw, 34px)">S</option>
-                <option value="clamp(32px, 4.4vw, 48px)" selected="">M</option>
-                <option value="clamp(38px, 5vw, 56px)">L</option>
-                <option value="clamp(44px, 5.6vw, 64px)">XL</option>
+                <option value="28px">S</option>
+                <option value="40px" selected="">M</option>
+                <option value="52px">L</option>
+                <option value="64px">XL</option>
               </select>
             </div>
             <div class="col-4">
@@ -2327,15 +2327,16 @@ const KPI_ICONS = ['fa-solid fa-sack-dollar','fa-solid fa-chart-line','fa-solid 
   'fa-solid fa-arrow-trend-up','fa-solid fa-gauge-high','fa-solid fa-globe','fa-solid fa-hand-holding-dollar','fa-solid fa-chart-pie'];
 
 // KPI cards created before the "big number" redesign stored small fixed rem font-sizes (1.6–3.1rem)
-// and narrow max-widths (180–300px), which is why an older/saved dashboard's values render tiny —
-// they aren't using the new clamp()-based sizes at all. These maps translate the old stored values
-// to their new, larger equivalents (same S/M/L/XL and Narrow/Normal/Wide tiers, just bigger) so
-// existing KPI cards pick up the bigger look automatically, with no need to re-create them.
+// and narrow max-widths (180–300px). A first pass then moved these to vw-based clamp() sizes, but
+// vw is measured against the whole browser window — since the canvas sits next to a 340px sidebar,
+// that under-sized the text on real layouts. Both generations are mapped here to the current plain,
+// viewport-independent px tiers, so any older/saved dashboard's KPI cards pick up the correct big
+// size automatically — no need to re-create them.
 const KPI_LEGACY_FONT_MAP = {
-  '1.6rem': 'clamp(24px, 3.2vw, 34px)',
-  '2.1rem': 'clamp(32px, 4.4vw, 48px)',
-  '2.6rem': 'clamp(38px, 5vw, 56px)',
-  '3.1rem': 'clamp(44px, 5.6vw, 64px)'
+  '1.6rem': '28px', 'clamp(24px, 3.2vw, 34px)': '28px',
+  '2.1rem': '40px', 'clamp(32px, 4.4vw, 48px)': '40px',
+  '2.6rem': '52px', 'clamp(38px, 5vw, 56px)': '52px',
+  '3.1rem': '64px', 'clamp(44px, 5.6vw, 64px)': '64px'
 };
 const KPI_LEGACY_WIDTH_MAP = { '180px': '260px', '220px': '340px', '300px': '460px' };
 
