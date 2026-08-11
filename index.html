@@ -303,26 +303,33 @@ body.viewer-mode .resize-handle{display:none;}
    spacing/alignment preserved by the grid (see JS-driven auto-fit in fitValueText/autoFitKpis). */
 #kpi-row{display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); grid-auto-rows:1fr; gap:1rem;}
 .kpi-card{
-  border-radius:var(--radius-md); padding:1.1rem 1.2rem; position:relative; overflow:hidden;
-  box-shadow:var(--shadow-soft); min-width:0; width:100%; height:100%;
+  min-width:280px;
+  border-radius:var(--radius-md); padding:1.2rem 1.35rem; position:relative; overflow:hidden;
+  box-shadow:var(--shadow-soft); width:100%; height:100%;
   border:1px solid var(--border); background:var(--card);
-  display:flex; flex-direction:column; justify-content:center;
+  display:flex; flex-direction:column; justify-content:center; gap:.35rem;
   transition:transform .15s ease, box-shadow .15s ease;
 }
 .kpi-card:hover{transform:translateY(-2px); box-shadow:var(--shadow-hover);}
 .kpi-card::before{
   content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--kpi-color, var(--signal));
 }
-.kpi-card .kpi-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:.55rem; gap:.5rem;}
+.kpi-card .kpi-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:.15rem; gap:.5rem;}
 .kpi-card .kpi-icon{
   width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center;
   background:color-mix(in srgb, var(--kpi-color, var(--signal)) 16%, transparent); color:var(--kpi-color, var(--signal));
   font-size:.95rem; flex:0 0 auto;
 }
 .kpi-card .kpi-name{font-size:.74rem; font-weight:700; color:var(--slate); text-transform:uppercase; letter-spacing:.04em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+/* KPI value is the main focus of the card — large, bold, and legible from a distance.
+   The inline font-size (from the card's configured S/M/L/XL/XXL size) acts as the ceiling;
+   clamp() keeps it fluid across breakpoints and fitValueText() (JS) shrinks it down, never up,
+   just enough that long numbers never wrap or overflow the card. */
 .kpi-card .kpi-value{
-  font-family:var(--font-mono); font-weight:800; line-height:1.05; margin:.2rem 0; letter-spacing:-.01em;
-  white-space:nowrap; overflow:hidden; max-width:100%; width:100%;
+  font-family:var(--font-mono); font-weight:800; line-height:1; margin:.1rem 0; letter-spacing:-.01em;
+  color:var(--ink);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; width:100%;
+  font-size:clamp(28px, 4.2vw, 60px);
 }
 .kpi-card .kpi-trend{font-size:.74rem; font-weight:600; display:flex; align-items:center; gap:.25rem;}
 .kpi-card .kpi-trend.up{color:#1FAF6B;}
@@ -335,6 +342,24 @@ body.viewer-mode .resize-handle{display:none;}
 .kpi-card:hover .kpi-edit-btn{opacity:1;}
 .kpi-edit-btn:hover{background:var(--signal); color:#04201F;}
 #widget-kpis .widget-body, #widget-filters .widget-body{overflow:visible; min-height:90px;}
+
+/* KPI Short/Actual number-format toggle — lives in the Key Metrics widget head. Purely a display
+   switch (see Utils.formatValue's `short` param): it never touches App.kpis, aggregation, filters,
+   tables, or charts — only how the already-computed KPI numbers are rendered. */
+.kpi-format-toggle{
+  display:inline-flex; align-items:center; border:1px solid var(--border); border-radius:999px;
+  padding:2px; background:var(--mist); gap:2px; flex:0 0 auto;
+}
+.kpi-format-toggle button{
+  border:none; background:transparent; color:var(--slate-soft); font-size:.72rem; font-weight:700;
+  padding:.28rem .7rem; border-radius:999px; line-height:1; transition:all .15s ease; white-space:nowrap;
+}
+.kpi-format-toggle button.active{background:var(--signal); color:#04201F;}
+.kpi-format-toggle button:not(.active):hover{color:var(--ink);}
+
+@media (max-width:576px){
+  .kpi-card .kpi-value{font-size:clamp(24px, 8vw, 36px);}
+}
 
 /* ---------- Full-page gates: share password prompt + "link no longer valid" screen ----------
    Both take over the entire viewport above everything else. While either is active the real app
@@ -982,8 +1007,10 @@ service cloud.firestore {
             <div class="col-4">
               <label class="form-label mini">Font Size</label>
               <select class="form-select form-select-sm" id="kpi-fontsize">
-                <option value="1.6rem">S</option><option value="2.1rem" selected="">M</option>
-                <option value="2.6rem">L</option><option value="3.1rem">XL</option>
+                <option value="clamp(24px, 3.2vw, 34px)">S</option>
+                <option value="clamp(32px, 4.4vw, 48px)" selected="">M</option>
+                <option value="clamp(38px, 5vw, 56px)">L</option>
+                <option value="clamp(44px, 5.6vw, 64px)">XL</option>
               </select>
             </div>
             <div class="col-4">
@@ -1197,6 +1224,9 @@ service cloud.firestore {
 
         <div class="widget" id="widget-kpis" data-wtype="kpis">
           <div class="widget-head"><i class="fa-solid fa-grip-vertical drag-handle"></i><span class="wt"><i class="fa-solid fa-gauge-high me-1"></i>Key Metrics</span>
+            <div class="kpi-format-toggle no-print" id="kpi-format-toggle" title="Display format for KPI numbers (doesn't change calculations)">
+              <button type="button" id="kpi-fmt-short" class="active">Short</button><button type="button" id="kpi-fmt-actual">Actual</button>
+            </div>
             <div class="widget-actions no-print"><button class="w-visibility" title="Hide/show"><i class="fa-solid fa-eye"></i></button></div>
           </div>
           <div class="widget-body"><div id="kpi-row"><div class="empty-state w-100"><i class="fa-solid fa-gauge-high"></i>No KPI cards yet. Build one from the KPI tab.</div></div></div>
@@ -1271,6 +1301,7 @@ const App = {
   fileName: null,
   uploadDate: null,
   kpis: [],
+  kpiNumberFormat: 'short',   // 'short' (₹34.53L / ₹8.4K) or 'actual' (₹34,53,000) — display-only, never affects calculations
   filters: [],
   filterValues: {},
   tables: [],
@@ -1371,9 +1402,17 @@ const Utils = {
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d;
   },
-  formatValue(value, format){
+  // `short` is opt-in (default false) so every existing caller — tables, charts, comparison
+  // labels, axis ticks — keeps rendering exactly as before. Only KpiMgr.renderCards() passes
+  // App.kpiNumberFormat === 'short' to abbreviate KPI card numbers (₹34.53L / ₹8.4K instead of
+  // ₹34,53,000). This is purely cosmetic: it never touches the underlying value or any
+  // aggregation/filter/calc logic.
+  formatValue(value, format, short){
     if (value === null || value === undefined || isNaN(value)) return '—';
     const num = Number(value);
+    if (short && (format === 'currency' || format === 'integer' || format === 'number' || format === 'decimal')){
+      return Utils.formatShort(num, format === 'currency');
+    }
     switch(format){
       case 'currency': return '₹' + Math.round(num).toLocaleString('en-IN');
       case 'percentage': return Math.round(num).toLocaleString('en-IN') + '%';
@@ -1382,6 +1421,19 @@ const Utils = {
       case 'number': return num.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
       default: return Math.round(num).toLocaleString('en-IN');
     }
+  },
+  // Indian short-number formatting: Thousand (K) → Lakh (L) → Crore (Cr). `withRupee` prefixes ₹
+  // for the currency format; other numeric formats abbreviate the same way without the symbol.
+  formatShort(num, withRupee){
+    const sign = num < 0 ? '-' : '';
+    const abs = Math.abs(num);
+    const prefix = withRupee ? '₹' : '';
+    let out;
+    if (abs >= 10000000) out = (abs / 10000000).toFixed(2).replace(/\.?0+$/, '') + 'Cr';
+    else if (abs >= 100000) out = (abs / 100000).toFixed(2).replace(/\.?0+$/, '') + 'L';
+    else if (abs >= 1000) out = (abs / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    else out = Math.round(abs).toLocaleString('en-IN');
+    return sign + prefix + out;
   },
   aggregateNumeric(rows, column, agg){
     if (agg === 'count') return rows.length;
@@ -2322,6 +2374,10 @@ const KpiMgr = {
   },
   renderCards(){
     const row = document.getElementById('kpi-row');
+    // Keep the Short/Actual toggle buttons in sync with App.kpiNumberFormat, e.g. after switching
+    // pages or loading a saved/shared dashboard that stored a different format.
+    document.getElementById('kpi-fmt-short')?.classList.toggle('active', App.kpiNumberFormat !== 'actual');
+    document.getElementById('kpi-fmt-actual')?.classList.toggle('active', App.kpiNumberFormat === 'actual');
     if (!App.kpis.length){
       row.innerHTML = '<div class="empty-state w-100"><i class="fa-solid fa-gauge-high"></i>No KPI cards yet. Build one from the KPI tab.</div>';
       if (typeof LayoutMgr !== "undefined") LayoutMgr.autoFitKpis();
@@ -2334,13 +2390,14 @@ const KpiMgr = {
       const isFilteredView = filtered.length !== App.data.length;
       const trendUp = val >= baseline;
       const trendHtml = k.showTrend ? `<div class="kpi-trend ${trendUp?'up':'down'}"><i class="fa-solid fa-arrow-trend-${trendUp?'up':'down'}"></i>${isFilteredView ? (trendUp?'Above':'Below') + ' total' : 'Stable'}</div>` : '';
-      const compareHtml = k.showCompare ? `<div class="kpi-compare">vs total: ${Utils.formatValue(baseline, k.format)}</div>` : '';
+      const isShort = App.kpiNumberFormat === 'short';
+      const compareHtml = k.showCompare ? `<div class="kpi-compare">vs total: ${Utils.formatValue(baseline, k.format, isShort)}</div>` : '';
       const iconHtml = k.showIcon ? `<div class="kpi-icon"><i class="${k.icon}"></i></div>` : '';
       return `
       <div class="kpi-card" style="--kpi-color:${k.color}; max-width:${k.width}; border-radius:${k.radius}; ${k.shadow?'':'box-shadow:none;'}">
         <button class="kpi-edit-btn no-print" onclick="KpiMgr.startEdit('${k.id}')" title="Edit this KPI card"><i class="fa-solid fa-pen"></i></button>
         <div class="kpi-top"><span class="kpi-name">${Utils.esc(k.name)}</span>${iconHtml}</div>
-        <div class="kpi-value" style="font-size:${k.fontSize}" data-base-size="${k.fontSize}">${Utils.formatValue(val, k.format)}</div>
+        <div class="kpi-value" style="font-size:${k.fontSize}" data-base-size="${k.fontSize}" title="${Utils.esc(Utils.formatValue(val, k.format, false))}">${Utils.formatValue(val, k.format, isShort)}</div>
         ${trendHtml}${compareHtml}
       </div>`;
     }).join('');
@@ -2408,6 +2465,22 @@ const KpiMgr = {
     row.querySelectorAll('.ip').forEach(ip => ip.addEventListener('click', () => {
       row.querySelectorAll('.ip').forEach(s => s.classList.remove('sel')); ip.classList.add('sel');
     }));
+  },
+  // Short ↔ Actual toggle — display-only (see Utils.formatValue). Re-renders the KPI cards so the
+  // new format takes effect immediately; does not touch App.kpis, filters, tables, or charts.
+  setNumberFormat(fmt){
+    if (fmt !== 'short' && fmt !== 'actual') return;
+    App.kpiNumberFormat = fmt;
+    document.getElementById('kpi-fmt-short')?.classList.toggle('active', fmt === 'short');
+    document.getElementById('kpi-fmt-actual')?.classList.toggle('active', fmt === 'actual');
+    KpiMgr.renderCards();
+  },
+  bindFormatToggle(){
+    document.getElementById('kpi-fmt-short')?.addEventListener('click', () => KpiMgr.setNumberFormat('short'));
+    document.getElementById('kpi-fmt-actual')?.addEventListener('click', () => KpiMgr.setNumberFormat('actual'));
+    // Reflect whatever format was loaded/restored (e.g. from a saved dashboard or share link).
+    document.getElementById('kpi-fmt-short')?.classList.toggle('active', App.kpiNumberFormat !== 'actual');
+    document.getElementById('kpi-fmt-actual')?.classList.toggle('active', App.kpiNumberFormat === 'actual');
   }
 };
 
@@ -3715,7 +3788,7 @@ const PageMgr = {
     const def = App.settings || {};
     const hasDefault = !!(def.defaultGsheetUrl && def.defaultGsheetUrl.trim());
     return {
-      kpis: [], filters: [], filterValues: {}, tables: [], charts: [], textboxes: [], layoutOrder: [], layout: {},
+      kpis: [], kpiNumberFormat: 'short', filters: [], filterValues: {}, tables: [], charts: [], textboxes: [], layoutOrder: [], layout: {},
       title: { title: 'Business Performance Dashboard', subtitle: 'Live insights from your uploaded data', company: App.title.company, logo: App.title.logo },
       // Per-page data connection (item #2/#3 — every page can connect to a *different* Google Sheet).
       // New pages start pre-filled from ⚙ Application Settings → Default Google Sheet, so you don't
@@ -3733,7 +3806,7 @@ const PageMgr = {
   snapshotCurrent(){
     const page = App.pages.find(p => p.id === App.currentPageId); if (!page) return;
     page.state = JSON.parse(JSON.stringify({
-      kpis: App.kpis, filters: App.filters, filterValues: App.filterValues, tables: App.tables, charts: App.charts, textboxes: App.textboxes,
+      kpis: App.kpis, kpiNumberFormat: App.kpiNumberFormat, filters: App.filters, filterValues: App.filterValues, tables: App.tables, charts: App.charts, textboxes: App.textboxes,
       layoutOrder: App.layoutOrder, layout: App.layout, title: App.title,
       dataSource: App.dataSource, autoRefreshInterval: App.autoRefreshInterval,
       // Data-source CONFIGURATION (spec item — persisted, not a data snapshot): which tabs are
@@ -3747,7 +3820,7 @@ const PageMgr = {
     }));
   },
   loadState(state){
-    App.kpis = state.kpis || []; App.filters = state.filters || []; App.filterValues = state.filterValues || {}; App.tables = state.tables || []; App.charts = state.charts || [];
+    App.kpis = state.kpis || []; App.kpiNumberFormat = state.kpiNumberFormat || 'short'; App.filters = state.filters || []; App.filterValues = state.filterValues || {}; App.tables = state.tables || []; App.charts = state.charts || [];
     App.textboxes = state.textboxes || []; App.layoutOrder = state.layoutOrder || []; App.layout = state.layout || {}; App.title = state.title || PageMgr.blankState().title;
     App.dataSource = state.dataSource || { type: null, gsheetUrl: null, gsheetName: null, gid: null };
     App.autoRefreshInterval = state.autoRefreshInterval || 0;
@@ -3898,7 +3971,7 @@ const StorageMgr = {
   save(){
     PageMgr.snapshotCurrent();
     const cfg = {
-      kpis: App.kpis, filters: App.filters, tables: App.tables, charts: App.charts, textboxes: App.textboxes,
+      kpis: App.kpis, kpiNumberFormat: App.kpiNumberFormat, filters: App.filters, tables: App.tables, charts: App.charts, textboxes: App.textboxes,
       theme: App.theme, themeAccent: App.themeAccent, bgColor: App.bgColor,
       title: App.title, layoutOrder: App.layoutOrder, layout: App.layout,
       columns: App.columns, columnTypes: App.columnTypes, fileName: App.fileName, uploadDate: App.uploadDate,
@@ -3920,7 +3993,7 @@ const StorageMgr = {
     const raw = localStorage.getItem(STORAGE_KEY); if (!raw) return false;
     let cfg; try { cfg = JSON.parse(raw); } catch(e){ return false; }
 
-    App.kpis = cfg.kpis || []; App.filters = cfg.filters || []; App.filterValues = {};
+    App.kpis = cfg.kpis || []; App.kpiNumberFormat = cfg.kpiNumberFormat || 'short'; App.filters = cfg.filters || []; App.filterValues = {};
     App.filters.forEach(f => App.filterValues[f.id] = (f.type==='multiselect'||f.type==='checkbox') ? [] : (f.type==='daterange'||f.type==='numberrange') ? {} : '');
     App.tables = cfg.tables || []; App.charts = cfg.charts || []; App.textboxes = cfg.textboxes || []; App.theme = cfg.theme || 'system';
     App.themeAccent = cfg.themeAccent || null; App.bgColor = cfg.bgColor || null; App.title = cfg.title || App.title;
@@ -3930,7 +4003,7 @@ const StorageMgr = {
     
     if (App.pages.length){
       const cur = App.pages.find(p => p.id === App.currentPageId);
-      if (cur) cur.state = { kpis: App.kpis, filters: App.filters, filterValues: App.filterValues, tables: App.tables, charts: App.charts, textboxes: App.textboxes, layoutOrder: App.layoutOrder, layout: App.layout, title: App.title };
+      if (cur) cur.state = { kpis: App.kpis, kpiNumberFormat: App.kpiNumberFormat, filters: App.filters, filterValues: App.filterValues, tables: App.tables, charts: App.charts, textboxes: App.textboxes, layoutOrder: App.layoutOrder, layout: App.layout, title: App.title };
     }
 
     App.dataSource = cfg.dataSource || { type: null, gsheetUrl: null, gsheetName: null };
@@ -3952,7 +4025,7 @@ const ShareMgr = {
   buildPayload(){
     PageMgr.snapshotCurrent();
     const payload = {
-      kpis: App.kpis, filters: App.filters, tables: App.tables, charts: App.charts, textboxes: App.textboxes,
+      kpis: App.kpis, kpiNumberFormat: App.kpiNumberFormat, filters: App.filters, tables: App.tables, charts: App.charts, textboxes: App.textboxes,
       theme: App.theme, themeAccent: App.themeAccent, bgColor: App.bgColor,
       title: App.title, layoutOrder: App.layoutOrder, layout: App.layout,
       columns: App.columns, columnTypes: App.columnTypes, fileName: App.fileName, uploadDate: App.uploadDate,
@@ -3988,7 +4061,7 @@ const ShareMgr = {
     const hash = location.hash || ''; if (!hash.startsWith('#state=')) return false;
     try {
       const json = LZString.decompressFromEncodedURIComponent(hash.slice(7)); const cfg = JSON.parse(json);
-      App.kpis = cfg.kpis || []; App.filters = cfg.filters || []; App.filterValues = {};
+      App.kpis = cfg.kpis || []; App.kpiNumberFormat = cfg.kpiNumberFormat || 'short'; App.filters = cfg.filters || []; App.filterValues = {};
       App.filters.forEach(f => App.filterValues[f.id] = (f.type==='multiselect'||f.type==='checkbox') ? [] : (f.type==='daterange'||f.type==='numberrange') ? {} : '');
       App.tables = cfg.tables || []; App.charts = cfg.charts || []; App.textboxes = cfg.textboxes || []; App.theme = cfg.theme || 'system';
       App.themeAccent = cfg.themeAccent || null; App.bgColor = cfg.bgColor || null; App.title = cfg.title || App.title;
@@ -4505,7 +4578,7 @@ const DashboardMgmtMgr = {
 const UI = {
   async init(){
     UI.wireToolbar(); UI.wireSidebarTabs(); UI.wireUpload(); UI.wireTitleBlock();
-    KpiMgr.buildColorRow(); KpiMgr.buildIconPicker();
+    KpiMgr.buildColorRow(); KpiMgr.buildIconPicker(); KpiMgr.bindFormatToggle();
     UI.wireKpiForm(); UI.wireFilterForm(); UI.wireTableForm(); UI.wireChartForm(); UI.wireTextboxForm(); UI.wireDataModel();
     LayoutMgr.init(); ThemeMgr.init(); PageMgr.init();
     UI.wireSettingsModal(); UI.wireManageModal(); UI.wireAuthModal();
