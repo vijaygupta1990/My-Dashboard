@@ -326,10 +326,10 @@ body.viewer-mode .resize-handle{display:none;}
    clamp() keeps it fluid across breakpoints and fitValueText() (JS) shrinks it down, never up,
    just enough that long numbers never wrap or overflow the card. */
 .kpi-card .kpi-value{
-  font-family:var(--font-mono); font-weight:800; line-height:1; margin:.1rem 0; letter-spacing:-.01em;
+  font-family:var(--font-mono); font-weight:900; line-height:1; margin:.1rem 0; letter-spacing:-.01em;
   color:var(--ink);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; width:100%;
-  font-size:40px;
+  font-size:48px;
 }
 .kpi-card .kpi-trend{font-size:.74rem; font-weight:600; display:flex; align-items:center; gap:.25rem;}
 .kpi-card .kpi-trend.up{color:#1FAF6B;}
@@ -358,7 +358,7 @@ body.viewer-mode .resize-handle{display:none;}
 .kpi-format-toggle button:not(.active):hover{color:var(--ink);}
 
 @media (max-width:576px){
-  .kpi-card .kpi-value{font-size:26px;}
+  .kpi-card .kpi-value{font-size:32px;}
 }
 
 /* ---------- Full-page gates: share password prompt + "link no longer valid" screen ----------
@@ -374,7 +374,7 @@ body.viewer-mode .resize-handle{display:none;}
   border-radius:var(--radius-md); padding:2rem 1.75rem; box-shadow:var(--shadow-hover);
 }
 .full-page-gate-icon{font-size:1.8rem; color:var(--signal); margin-bottom:.75rem; display:block;}
-body.share-locked-active #app-shell, body.link-invalid-active #app-shell{display:none;}
+body.link-invalid-active #app-shell{display:none;}
 
 /* ---------- Filters / Key Metrics containers: always match the Dashboard Title
    container's width and left/right alignment exactly. These two widgets stay
@@ -726,15 +726,10 @@ html{scroll-behavior:smooth;}
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <p class="text-slate small mb-2">Anyone with this link can view the dashboard — but only after entering the password below. They'll be asked for it every time, on every device; it's never remembered in their browser.</p>
-          <label class="form-label mini">Share password <span class="text-danger">*</span></label>
-          <div class="d-flex gap-2">
-            <input type="password" class="form-control form-control-sm" id="share-password-input" placeholder="Choose a password" autocomplete="new-password">
-            <button class="tb-btn primary" id="share-generate-btn" type="button"><i class="fa-solid fa-link"></i> Generate Link</button>
-          </div>
-          <div id="share-password-status" class="mini text-slate-soft mt-1 mb-2"></div>
+          <p class="text-slate small mb-2">Anyone with this link can view the dashboard — use filters, KPI cards, tables and charts — but can't edit anything unless they sign in with your login.</p>
+          <button class="tb-btn primary" id="share-generate-btn" type="button"><i class="fa-solid fa-link"></i> Generate Link</button>
 
-          <div id="share-link-section" class="d-none">
+          <div id="share-link-section" class="d-none mt-3">
             <label class="form-label mini">Shareable link</label>
             <div class="d-flex gap-2">
               <input type="text" class="form-control form-control-sm mono" id="share-link-input" readonly="">
@@ -744,21 +739,6 @@ html{scroll-behavior:smooth;}
           </div>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- =================== SHARE LINK PASSWORD GATE (full-page, non-dismissable) ===================
-       Shown before ANY content of a password-protected shared dashboard is rendered. Nothing about
-       a successful unlock is ever saved (no storage of any kind) — it only lives in this page's
-       JS memory, so a refresh, a new tab, or reopening the link later always asks again. -->
-  <div id="share-password-gate" class="full-page-gate d-none">
-    <div class="full-page-gate-card">
-      <i class="fa-solid fa-lock full-page-gate-icon"></i>
-      <h5 class="font-display mb-1">Password required</h5>
-      <p class="text-slate-soft small mb-3">This dashboard is password protected. Enter the password to view it.</p>
-      <input type="password" id="share-gate-pass-input" class="form-control form-control-sm mb-2" placeholder="Password" autocomplete="off">
-      <button class="tb-btn primary w-100" id="share-gate-submit-btn" type="button">Unlock</button>
-      <div id="share-gate-error" class="text-danger mini mt-2"></div>
     </div>
   </div>
 
@@ -1007,10 +987,10 @@ service cloud.firestore {
             <div class="col-4">
               <label class="form-label mini">Font Size</label>
               <select class="form-select form-select-sm" id="kpi-fontsize">
-                <option value="28px">S</option>
-                <option value="40px" selected="">M</option>
-                <option value="52px">L</option>
-                <option value="64px">XL</option>
+                <option value="32px">S</option>
+                <option value="48px" selected="">M</option>
+                <option value="64px">L</option>
+                <option value="80px">XL</option>
               </select>
             </div>
             <div class="col-4">
@@ -1342,7 +1322,7 @@ const App = {
     ownerUid: null,
     createdAt: null,
     updatedAt: null,
-    sharePasswordHash: null,   // SHA-256(salt + ':' + password) — set from the Share modal, required before a link can be generated
+    sharePasswordHash: null,   // legacy field, no longer used — share links are view-only by default now
     sharePasswordSalt: null
   },
   settings: {                   // Application Settings (item #8)
@@ -2333,7 +2313,7 @@ const KPI_ICONS = ['fa-solid fa-sack-dollar','fa-solid fa-chart-line','fa-solid 
 // through unmatched, which is exactly what kept some cards small), this parses whatever numeric size
 // is actually stored and buckets it into the current S/M/L/XL px tiers by magnitude. That reliably
 // upgrades ANY older/saved KPI card, regardless of exactly which past version wrote it.
-const KPI_FONT_TIERS = [28, 40, 52, 64];      // S, M, L, XL — px
+const KPI_FONT_TIERS = [32, 48, 64, 80];      // S, M, L, XL — px (bumped up for readability from a distance)
 const KPI_WIDTH_TIERS = [260, 340, 460];      // Narrow, Normal, Wide — px
 function kpiBucket(px, tiers){
   // Round UP to the nearest tier that's at least as big as the parsed size — a legacy value never
@@ -2358,7 +2338,7 @@ const KpiMgr = {
   // magnitude of whatever was actually stored (see kpiParsePx/kpiBucket above) — not a fragile
   // exact-string match. A card already on a current tier value is a no-op — safe on every render.
   normalizeSizing(k){
-    const fPx = kpiParsePx(k.fontSize); k.fontSize = (fPx !== null ? kpiBucket(fPx, KPI_FONT_TIERS) : 40) + 'px';
+    const fPx = kpiParsePx(k.fontSize); k.fontSize = (fPx !== null ? kpiBucket(fPx, KPI_FONT_TIERS) : 48) + 'px';
     const wPx = kpiParsePx(k.width); k.width = (wPx !== null ? kpiBucket(wPx, KPI_WIDTH_TIERS) : 340) + 'px';
   },
   startEdit(id){
@@ -4068,10 +4048,8 @@ const ShareMgr = {
       // Multi-sheet data-source configuration (which tabs, how they're joined, calculated fields) —
       // needed so this self-contained fallback link rebuilds the same data model as the cloud path.
       selectedSheets: App.selectedSheets, relationships: App.relationships, calcFields: App.calcFields, gsheetMeta: App.gsheetMeta,
-      // Share password (hash + salt only, never the plaintext) — see SharePasswordMgr. This link is
-      // entirely self-contained (no server to ask), so this is the same "cosmetic, client-side"
-      // protection as the cloud path: it still requires a fresh, unsaved password entry on every
-      // open, it just can't stop someone from reading the URL's own payload directly.
+      // Legacy fields — no longer set anywhere (share links are view-only by default), kept only
+      // so an old link saved before this change still parses without error.
       sharePasswordHash: App.dashboardMeta.sharePasswordHash || null,
       sharePasswordSalt: App.dashboardMeta.sharePasswordSalt || null
     };
@@ -4116,38 +4094,6 @@ const ShareMgr = {
       } else if (cfg.columns){ App.columns = cfg.columns; App.columnTypes = cfg.columnTypes || {}; }
       return true;
     } catch (err){ console.error('Could not load shared dashboard state', err); Utils.toast('This share link looks corrupted or out of date', true); return false; }
-  }
-};
-
-// Hashes the per-dashboard share password (SHA-256 + random salt) so the plaintext password is never
-// written to Firestore, a share link, or anywhere else. IMPORTANT — same honest caveat as the rest of
-// this app's "Admin Protection" (see Application Settings → Firestore Security Rules note): this is a
-// client-side gate, not server-enforced encryption. On the cloud "?d=" path the hash lives in a
-// Firestore doc anyone with the link can read, and on the self-contained "#state=" path the hash
-// travels in the URL itself — so it stops casual/opportunistic access (and satisfies "ask for the
-// password every time, never remember it"), but it cannot stop someone who reads the page's own
-// source/network traffic. There is no way around that on a static, serverless host without adding a
-// real backend.
-const SharePasswordMgr = {
-  async sha256Hex(text){
-    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-  },
-  randomSaltHex(){
-    const arr = new Uint8Array(16); crypto.getRandomValues(arr);
-    return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-  },
-  // Sets (or changes) the password on App.dashboardMeta in memory — caller is responsible for
-  // persisting it (ProjectMgr.save / ShareMgr link generation).
-  async setPassword(plaintext){
-    const salt = SharePasswordMgr.randomSaltHex();
-    App.dashboardMeta.sharePasswordHash = await SharePasswordMgr.sha256Hex(salt + ':' + plaintext);
-    App.dashboardMeta.sharePasswordSalt = salt;
-  },
-  async verify(attempt, storedHash, storedSalt){
-    if (!storedHash) return true; // nothing to protect against
-    const attemptHash = await SharePasswordMgr.sha256Hex((storedSalt || '') + ':' + attempt);
-    return attemptHash === storedHash;
   }
 };
 
@@ -4661,19 +4607,9 @@ const UI = {
       restored = true;
     }
 
-    // Shared links (dashId, or the legacy self-contained "#state=" link) that were saved with a
-    // password must ask for it — every single time, on every device/tab/refresh. Nothing about a
-    // correct entry is ever written to localStorage/sessionStorage/cookies/IndexedDB, so there is
-    // no "remembered" state to expire or log out of: a fresh page load always means a fresh prompt.
-    // The owner (already signed in and resolved to role 'editor' above) always skips this.
-    const isLocked = restored && App.role === 'viewer' && App.dashboardMeta && App.dashboardMeta.sharePasswordHash;
-    if (isLocked){
-      UI.showSharePasswordGate(() => {
-        UI.finishRestoredInit(dashId, legacyShared);
-        PermissionMgr.apply(App.role);
-        UI.updateAuthUI();
-      });
-    } else if (restored){
+    // Shared links are view-only by default (role resolves to 'viewer' below via the existing
+    // login-based PermissionMgr) — no separate password prompt for shared viewers.
+    if (restored){
       UI.finishRestoredInit(dashId, legacyShared);
       PermissionMgr.apply(App.role);
       UI.updateAuthUI();
@@ -4737,44 +4673,6 @@ const UI = {
     document.body.classList.add('link-invalid-active');
     const screen = document.getElementById('link-invalid-screen');
     if (screen) screen.classList.remove('d-none');
-  },
-
-  // Full-page, non-dismissable password prompt shown before a password-protected shared dashboard is
-  // rendered. `onSuccess` runs only after a correct password is verified; nothing about the entry or
-  // the unlocked state is ever persisted (no localStorage/sessionStorage/cookie), so it lives only in
-  // this page's memory — a refresh, a new tab, or reopening the link later always asks again.
-  showSharePasswordGate(onSuccess){
-    document.body.classList.add('share-locked-active');
-    const screen = document.getElementById('share-password-gate');
-    const input = document.getElementById('share-gate-pass-input');
-    const err = document.getElementById('share-gate-error');
-    const btn = document.getElementById('share-gate-submit-btn');
-    if (!screen || !input || !btn) { onSuccess(); return; } // markup missing — fail open rather than hard-lock the app
-    screen.classList.remove('d-none');
-    err.textContent = '';
-    input.value = '';
-    setTimeout(() => input.focus(), 50);
-
-    let checking = false;
-    const attempt = async () => {
-      if (checking) return;
-      const pass = input.value;
-      if (!pass){ err.textContent = 'Enter the password.'; return; }
-      checking = true; btn.disabled = true; btn.textContent = 'Checking…';
-      const ok = await SharePasswordMgr.verify(pass, App.dashboardMeta.sharePasswordHash, App.dashboardMeta.sharePasswordSalt);
-      checking = false; btn.disabled = false; btn.textContent = 'Unlock';
-      if (ok){
-        screen.classList.add('d-none');
-        document.body.classList.remove('share-locked-active');
-        input.value = ''; // never let the entered password linger in the DOM either
-        onSuccess();
-      } else {
-        err.textContent = 'Incorrect password. Try again.';
-        input.value = ''; input.focus();
-      }
-    };
-    btn.onclick = attempt;
-    input.onkeydown = (e) => { if (e.key === 'Enter') attempt(); };
   },
 
   // Best-effort check so a broken/undeployed GitHub Pages URL is caught here, not discovered later
@@ -4892,34 +4790,14 @@ const UI = {
     btn.addEventListener('click', () => {
       if (App.role !== 'editor') return;
       if (!App.data.length && App.dataSource.type !== 'gsheet'){ Utils.toast('Upload data before sharing the dashboard', true); return; }
-      // Reset the modal to "set/confirm password" state every time it's opened — the link from a
-      // previous share is not shown until a password is (re)confirmed via Generate Link, so nobody
-      // can accidentally hand out an unprotected link.
-      document.getElementById('share-password-input').value = '';
       document.getElementById('share-link-section').classList.add('d-none');
       document.getElementById('share-link-input').value = '';
-      const statusEl = document.getElementById('share-password-status');
-      statusEl.className = 'mini text-slate-soft mt-1 mb-2';
-      statusEl.textContent = App.dashboardMeta.sharePasswordHash
-        ? 'A password is already set for this link. Leave blank to keep it, or enter a new one to change it — then click Generate Link.'
-        : 'Required — viewers must enter this password every time they open the shared link.';
       bootstrap.Modal.getOrCreateInstance(document.getElementById('share-modal')).show();
     });
 
     document.getElementById('share-generate-btn').addEventListener('click', async () => {
-      const pwInput = document.getElementById('share-password-input');
-      const pass = pwInput.value;
-      const statusEl = document.getElementById('share-password-status');
-      const hadPasswordAlready = !!App.dashboardMeta.sharePasswordHash;
-      if (!pass && !hadPasswordAlready){
-        statusEl.className = 'mini text-danger mt-1 mb-2';
-        statusEl.textContent = 'Enter a password — shared links must be password protected.';
-        pwInput.focus();
-        return;
-      }
       const warn = document.getElementById('share-warning');
       Utils.toast('Preparing your share link…');
-      if (pass) await SharePasswordMgr.setPassword(pass); // new/changed password — updates App.dashboardMeta in memory
       // Always (re)save before sharing, and — critically — branch on whether that save actually
       // reached Firestore (cloudSaved), never on CloudMgr.ready alone. CloudMgr.ready only tells
       // us Firebase initialized; it says nothing about whether this particular write succeeded.
@@ -4930,15 +4808,12 @@ const UI = {
       if (cloudSaved){
         const link = location.origin + location.pathname + '?d=' + encodeURIComponent(id) + '&role=viewer';
         document.getElementById('share-link-input').value = link;
-        warn.textContent = 'Live, password-protected link — always shows your latest saved version, and pulls fresh Google Sheet data automatically. Works for anyone, on any browser or device, independent of this computer.';
+        warn.textContent = 'Live, view-only link — always shows your latest saved version, and pulls fresh Google Sheet data automatically. Works for anyone, on any browser or device, independent of this computer. They can use filters, KPIs, tables and charts, but cannot edit unless they sign in with your login.';
       } else {
         // Self-contained fallback: the entire dashboard configuration (and, for non-Sheet sources,
         // the data itself) travels inside the link's own URL hash. It does not read or write
         // Firestore, ClaudeSync, or this browser's localStorage — so it is just as isolated and
-        // just as portable to another browser/device as a working cloud link would be. The password
-        // hash travels in the URL too, so the same "ask every time" gate still applies here, though
-        // it can't stop someone from reading the page's own data directly out of the URL — see the
-        // caveat on SharePasswordMgr above.
+        // just as portable to another browser/device as a working cloud link would be.
         const { link, truncated, sizeKB } = ShareMgr.generateLink();
         document.getElementById('share-link-input').value = link;
         warn.textContent = (truncated
@@ -4946,12 +4821,10 @@ const UI = {
           : `Link size ~${sizeKB}KB — includes full config, and pulls fresh Google Sheet data on load. `)
           + (CloudMgr.ready
             ? 'Cloud Sync save failed, so this self-contained link was used instead — it will still open correctly on any device, since everything it needs travels in the link itself. Check ⚙ Application Settings → Cloud Sync (and your Firestore rules) to enable live cloud links.'
-            : 'This self-contained link works on any device — set up Cloud Sync in ⚙ Application Settings for a live, always-current link instead.');
+            : 'This self-contained link works on any device — set up Cloud Sync in ⚙ Application Settings for a live, always-current link instead.')
+          + ' View-only — they cannot edit unless they sign in with your login.';
       }
       document.getElementById('share-link-section').classList.remove('d-none');
-      statusEl.className = 'mini text-slate-soft mt-1 mb-2';
-      statusEl.textContent = 'Password protection is ON for this link.';
-      pwInput.value = ''; // never leave the plaintext sitting in the form
     });
 
     document.getElementById('share-copy-btn').addEventListener('click', () => {
