@@ -2128,11 +2128,11 @@ const RelationshipMgr = {
 };
 
 /* ================================================================
-   JOIN ENGINE — merges the primary/base sheet with any number of other selected sheets, one
-   relationship at a time (a "star" join around the base table — this is the common BI pattern of
-   one fact table + several lookup/dimension tables; chained joins between two non-base tables
-   aren't attempted). Supports Inner / Left / Right / Full per relationship. The merged result
-   becomes the new App.data — the exact same shape every existing chart/KPI/filter/table expects.
+   JOIN ENGINE — merges the primary/base sheet with any number of other selected sheets by walking
+   the relationship graph outward from the base table (a snowflake/chain join — e.g. Customers →
+   Orders → Payments — not just a one-hop star). Supports Inner / Left / Right / Full per
+   relationship. The merged result becomes the new App.data — the exact same shape every existing
+   chart/KPI/filter/table expects.
 ================================================================= */
 const JoinEngine = {
   joinTwo(leftRows, leftKeys, rightRows, rightKeys, rightCols, type){
@@ -2171,23 +2171,55 @@ const JoinEngine = {
     }
     return out;
   },
-  // Runs every relationship whose base is `baseTableName` against it in sequence, and returns the
-  // merged row set (App.columns is derived from the merged rows' keys afterward, same as loadSheet()).
-  // Only BLOCKING validation problems (missing table/column, incompatible types) skip a relationship
-  // entirely — data-quality issues (blank keys, duplicate keys, no overlap) are surfaced as warnings
-  // but the join still runs, so a handful of messy rows can never silently disable an entire join.
+  // Walks the relationship graph outward from `baseTableName`, applying each relationship once the
+  // table it starts from has actually been merged in — so a chain like Customers → Orders → Payments
+  // is followed in dependency order, not just relationships whose base is literally the primary sheet.
+  //
+  // CHASM-TRAP GUARD: if the SAME table can be reached two different ways (e.g. Customers→Payments
+  // on CustomerID *and* Orders→Payments on OrderID), only the most specific path is kept. Joining a
+  // table a second time via a coarser, already-expanded key (CustomerID, shared by every order a
+  // customer has) multiplies rows on top of rows already fanned out by an earlier join — e.g. a
+  // customer with 3 orders and 3 payments would wrongly become 3×3=9 rows instead of 3, inflating
+  // every SUM/COUNT/AVG built on the combined data. Preferring the relationship whose base is NOT
+  // the root/primary sheet (when such an alternative exists) picks the direct, 1:1-style fact-to-
+  // fact link over the shared-dimension link that causes this. Only BLOCKING validation problems
+  // (missing table/column, incompatible types) skip a relationship entirely — data-quality issues
+  // (blank keys, duplicate keys, no overlap) are surfaced as warnings but the join still runs, so a
+  // handful of messy rows can never silently disable an entire join.
   run(baseTableName, relationships){
     const base = App.sheetTables[baseTableName];
     if (!base) return { rows: [], errors: [`"${baseTableName}" is not a loaded sheet.`], warnings: [] };
     let rows = base.rows.map(r => ({ ...r }));
     const errors = [], warnings = [];
-    relationships.filter(r => r.base === baseTableName).forEach(rel => {
-      const { errors: relErrors, warnings: relWarnings } = RelationshipMgr.validate(rel);
-      if (relErrors.length){ errors.push(`${rel.base} → ${rel.other}: ${relErrors[0]}`); return; }
-      relWarnings.forEach(w => warnings.push(`${rel.base} → ${rel.other}: ${w}`));
-      const other = App.sheetTables[rel.other];
-      rows = JoinEngine.joinTwo(rows, rel.baseKeys, other.rows, rel.otherKeys, other.columns, rel.type);
+
+    const byOther = {};
+    relationships.forEach(rel => { (byOther[rel.other] = byOther[rel.other] || []).push(rel); });
+    const chosen = Object.values(byOther).map(list => {
+      const specific = list.filter(r => r.base !== baseTableName);
+      return specific.length ? specific[0] : list[0];
     });
+
+    const merged = new Set([baseTableName]);
+    let remaining = chosen;
+    let progressed = true;
+    while (remaining.length && progressed){
+      progressed = false;
+      const stillWaiting = [];
+      remaining.forEach(rel => {
+        if (!merged.has(rel.base)){ stillWaiting.push(rel); return; } // this table hasn't been merged in yet — try again next pass
+        const { errors: relErrors, warnings: relWarnings } = RelationshipMgr.validate(rel);
+        if (relErrors.length){ errors.push(`${rel.base} → ${rel.other}: ${relErrors[0]}`); progressed = true; return; }
+        relWarnings.forEach(w => warnings.push(`${rel.base} → ${rel.other}: ${w}`));
+        const other = App.sheetTables[rel.other];
+        rows = JoinEngine.joinTwo(rows, rel.baseKeys, other.rows, rel.otherKeys, other.columns, rel.type);
+        merged.add(rel.other);
+        progressed = true;
+      });
+      remaining = stillWaiting;
+    }
+    // Anything left after the graph stops growing is unreachable from the primary sheet (e.g. a
+    // relationship between two tables that never connect back to it) — surfaced, not silently dropped.
+    remaining.forEach(rel => errors.push(`${rel.base} → ${rel.other}: "${rel.base}" doesn't connect back to "${baseTableName}" through any other relationship, so this one can't be applied.`));
     return { rows, errors, warnings };
   }
 };
