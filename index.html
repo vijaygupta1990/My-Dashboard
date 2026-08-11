@@ -1730,14 +1730,23 @@ const DataMgr = {
   },
   // Same type-sniffing heuristic as detectType(), but works on an arbitrary row array instead of
   // always reading the global App.data — needed because sheetTables holds many tables at once.
+  // IMPORTANT: this must use the exact same numeric test and threshold as detectType() below.
+  // It previously used a raw `!isNaN(parseFloat(v))` check (no currency/comma/%/accounting-negative
+  // stripping) and a looser 0.6 threshold instead of Utils.isNumeric()'s cleaned check + 0.8 — so a
+  // formatted numeric column (e.g. "₹1,234.56", "(1,234)", "12%") that correctly detected as
+  // 'number' in a single-sheet dashboard could get misclassified as 'string' the moment sheets were
+  // combined (sheetTables/join results always go through THIS function, never detectType()). That
+  // silently dropped the column out of table footer Sum/Average, per-column number formatting, and
+  // could also cause false "type mismatch" errors in RelationshipMgr.validate() for numeric-looking
+  // join keys — even though the underlying values were perfectly summable.
   detectTypeFor(rows, col){
     const sample = [];
     for (let i=0; i<rows.length && sample.length<200; i++){ const v = rows[i][col]; if (v!==null && v!==undefined && v!=='') sample.push(v); }
     if (!sample.length) return 'string';
     const dateCount = sample.filter(v => v instanceof Date).length;
     if (dateCount / sample.length > 0.6) return 'date';
-    const numCount = sample.filter(v => typeof v === 'number' || (v !== '' && !isNaN(parseFloat(v)) && isFinite(v))).length;
-    if (numCount / sample.length > 0.6) return 'number';
+    const numCount = sample.filter(v => Utils.isNumeric(v)).length;
+    if (numCount / sample.length > 0.8) return 'number';
     return 'string';
   },
   _applyGsheetWorkbook(wb, opts){
@@ -2050,10 +2059,22 @@ const DataMgr = {
 const RelationshipMgr = {
   autoDetect(){
     const names = Object.keys(App.sheetTables);
+    // The dashboard's actual primary/base sheet — NOT necessarily names[0]. JoinEngine.run() only
+    // ever applies a relationship whose `base` equals this sheet (that's how the "star join" around
+    // the primary table is anchored). Deciding base/other purely by each pair's position in `names`
+    // (the old behavior) meant that whenever the primary sheet wasn't first in the workbook's tab
+    // order for a given pair, the relationship got recorded backwards (base = the OTHER sheet) —
+    // JoinEngine.run() would then never find it, and "Apply Join" would silently fall through to
+    // just the primary sheet's own rows with no enrichment at all, regardless of join type. This was
+    // the actual root cause of combined-sheet dashboards showing the same (wrong/incomplete) numbers
+    // as before, no matter whether Left/Right/Inner/Full was selected — the join was never running.
+    const primary = App.dataSource.gsheetName;
     const found = [];
     for (let i = 0; i < names.length; i++){
       for (let j = i + 1; j < names.length; j++){
-        const a = App.sheetTables[names[i]], b = App.sheetTables[names[j]];
+        let aName = names[i], bName = names[j];
+        if (bName === primary) { const tmp = aName; aName = bName; bName = tmp; } // anchor this pair on the primary sheet whenever it's involved
+        const a = App.sheetTables[aName], b = App.sheetTables[bName];
         // Collect every shared, type-compatible column, but only ever turn ONE of them into a
         // relationship for this sheet pair. Creating a separate relationship per shared column (the
         // old behavior) meant JoinEngine.run() chained N joins between the same two sheets for N
