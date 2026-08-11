@@ -301,7 +301,7 @@ body.viewer-mode .resize-handle{display:none;}
 /* KPI row + cards — responsive 5-column CSS Grid (Row 1 = KPI 1-5, Row 2 = KPI 6-10, ...).
    Cards auto-wrap onto additional rows once there are more than 5 KPI cards, with equal
    spacing/alignment preserved by the grid (see JS-driven auto-fit in fitValueText/autoFitKpis). */
-#kpi-row{display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); grid-auto-rows:1fr; gap:1rem;}
+#kpi-row{display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); grid-auto-rows:1fr; gap:1rem;}
 .kpi-card{
   min-width:280px;
   border-radius:var(--radius-md); padding:1.2rem 1.35rem; position:relative; overflow:hidden;
@@ -1016,7 +1016,7 @@ service cloud.firestore {
             <div class="col-4">
               <label class="form-label mini">Width</label>
               <select class="form-select form-select-sm" id="kpi-width">
-                <option value="180px">Narrow</option><option value="220px" selected="">Normal</option><option value="300px">Wide</option>
+                <option value="260px">Narrow</option><option value="340px" selected="">Normal</option><option value="460px">Wide</option>
               </select>
             </div>
             <div class="col-4">
@@ -2326,12 +2326,33 @@ const KPI_ICONS = ['fa-solid fa-sack-dollar','fa-solid fa-chart-line','fa-solid 
   'fa-solid fa-percent','fa-solid fa-box','fa-solid fa-clock','fa-solid fa-star','fa-solid fa-truck','fa-solid fa-bullseye',
   'fa-solid fa-arrow-trend-up','fa-solid fa-gauge-high','fa-solid fa-globe','fa-solid fa-hand-holding-dollar','fa-solid fa-chart-pie'];
 
+// KPI cards created before the "big number" redesign stored small fixed rem font-sizes (1.6–3.1rem)
+// and narrow max-widths (180–300px), which is why an older/saved dashboard's values render tiny —
+// they aren't using the new clamp()-based sizes at all. These maps translate the old stored values
+// to their new, larger equivalents (same S/M/L/XL and Narrow/Normal/Wide tiers, just bigger) so
+// existing KPI cards pick up the bigger look automatically, with no need to re-create them.
+const KPI_LEGACY_FONT_MAP = {
+  '1.6rem': 'clamp(24px, 3.2vw, 34px)',
+  '2.1rem': 'clamp(32px, 4.4vw, 48px)',
+  '2.6rem': 'clamp(38px, 5vw, 56px)',
+  '3.1rem': 'clamp(44px, 5.6vw, 64px)'
+};
+const KPI_LEGACY_WIDTH_MAP = { '180px': '260px', '220px': '340px', '300px': '460px' };
+
 const KpiMgr = {
   addKpi(cfg){ App.kpis.push(cfg); KpiMgr.renderList(); KpiMgr.renderCards(); },
   removeKpi(id){ App.kpis = App.kpis.filter(k => k.id !== id); KpiMgr.renderList(); KpiMgr.renderCards(); },
+  // Migrates one KPI's stored fontSize/width in place if (and only if) they exactly match an old
+  // pre-redesign value. Already-migrated or custom values are left untouched, and re-running this
+  // on an already-migrated card is a no-op — safe to call on every render.
+  normalizeSizing(k){
+    if (KPI_LEGACY_FONT_MAP[k.fontSize]) k.fontSize = KPI_LEGACY_FONT_MAP[k.fontSize];
+    if (KPI_LEGACY_WIDTH_MAP[k.width]) k.width = KPI_LEGACY_WIDTH_MAP[k.width];
+  },
   startEdit(id){
     const k = App.kpis.find(x => x.id === id);
     if (!k) return;
+    KpiMgr.normalizeSizing(k);
     App.editId.kpi = id;
     document.getElementById('kpi-name').value = k.name;
     document.getElementById('kpi-column').value = k.column;
@@ -2384,6 +2405,7 @@ const KpiMgr = {
       return;
     }
     const filtered = DataMgr.getFiltered();
+    App.kpis.forEach(KpiMgr.normalizeSizing);
     row.innerHTML = App.kpis.map(k => {
       const val = Utils.aggregateNumeric(filtered, k.column, k.agg);
       const baseline = Utils.aggregateNumeric(App.data, k.column, k.agg);
