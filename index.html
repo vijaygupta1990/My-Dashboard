@@ -2326,29 +2326,40 @@ const KPI_ICONS = ['fa-solid fa-sack-dollar','fa-solid fa-chart-line','fa-solid 
   'fa-solid fa-percent','fa-solid fa-box','fa-solid fa-clock','fa-solid fa-star','fa-solid fa-truck','fa-solid fa-bullseye',
   'fa-solid fa-arrow-trend-up','fa-solid fa-gauge-high','fa-solid fa-globe','fa-solid fa-hand-holding-dollar','fa-solid fa-chart-pie'];
 
-// KPI cards created before the "big number" redesign stored small fixed rem font-sizes (1.6–3.1rem)
-// and narrow max-widths (180–300px). A first pass then moved these to vw-based clamp() sizes, but
-// vw is measured against the whole browser window — since the canvas sits next to a 340px sidebar,
-// that under-sized the text on real layouts. Both generations are mapped here to the current plain,
-// viewport-independent px tiers, so any older/saved dashboard's KPI cards pick up the correct big
-// size automatically — no need to re-create them.
-const KPI_LEGACY_FONT_MAP = {
-  '1.6rem': '28px', 'clamp(24px, 3.2vw, 34px)': '28px',
-  '2.1rem': '40px', 'clamp(32px, 4.4vw, 48px)': '40px',
-  '2.6rem': '52px', 'clamp(38px, 5vw, 56px)': '52px',
-  '3.1rem': '64px', 'clamp(44px, 5.6vw, 64px)': '64px'
-};
-const KPI_LEGACY_WIDTH_MAP = { '180px': '260px', '220px': '340px', '300px': '460px' };
-
+// KPI cards created before the "big number" redesign stored small fixed rem font-sizes (1.6–3.1rem),
+// narrow max-widths (180–300px), and — for a brief window — vw-based clamp() sizes that under-sized
+// text on real layouts (the canvas sits next to a 340px sidebar, so vw ≠ actual card width). Rather
+// than matching a fixed list of old exact strings (fragile — any small formatting difference slips
+// through unmatched, which is exactly what kept some cards small), this parses whatever numeric size
+// is actually stored and buckets it into the current S/M/L/XL px tiers by magnitude. That reliably
+// upgrades ANY older/saved KPI card, regardless of exactly which past version wrote it.
+const KPI_FONT_TIERS = [28, 40, 52, 64];      // S, M, L, XL — px
+const KPI_WIDTH_TIERS = [260, 340, 460];      // Narrow, Normal, Wide — px
+function kpiBucket(px, tiers){
+  // Round UP to the nearest tier that's at least as big as the parsed size — a legacy value never
+  // ends up smaller than the closest current option, only as-is or bigger.
+  for (let i = 0; i < tiers.length; i++) if (px <= tiers[i]) return tiers[i];
+  return tiers[tiers.length - 1];
+}
+// Extracts the most representative pixel number from a stored size string: plain "NNpx", "N.Nrem"
+// (1rem = 16px), or a clamp(min, pref, max) — for clamp, the MAX (3rd argument) is used, since that
+// was always the intended/designed size; the min/pref only existed to shrink it on narrow viewports.
+function kpiParsePx(str){
+  if (!str) return null;
+  const nums = String(str).match(/[\d.]+(px|rem)/g);
+  if (!nums || !nums.length) return null;
+  const toPx = s => s.endsWith('rem') ? parseFloat(s) * 16 : parseFloat(s);
+  return toPx(nums[nums.length - 1]); // last number = max for clamp(), the only number otherwise
+}
 const KpiMgr = {
   addKpi(cfg){ App.kpis.push(cfg); KpiMgr.renderList(); KpiMgr.renderCards(); },
   removeKpi(id){ App.kpis = App.kpis.filter(k => k.id !== id); KpiMgr.renderList(); KpiMgr.renderCards(); },
-  // Migrates one KPI's stored fontSize/width in place if (and only if) they exactly match an old
-  // pre-redesign value. Already-migrated or custom values are left untouched, and re-running this
-  // on an already-migrated card is a no-op — safe to call on every render.
+  // Migrates one KPI's stored fontSize/width in place to the current px tiers, based on the
+  // magnitude of whatever was actually stored (see kpiParsePx/kpiBucket above) — not a fragile
+  // exact-string match. A card already on a current tier value is a no-op — safe on every render.
   normalizeSizing(k){
-    if (KPI_LEGACY_FONT_MAP[k.fontSize]) k.fontSize = KPI_LEGACY_FONT_MAP[k.fontSize];
-    if (KPI_LEGACY_WIDTH_MAP[k.width]) k.width = KPI_LEGACY_WIDTH_MAP[k.width];
+    const fPx = kpiParsePx(k.fontSize); k.fontSize = (fPx !== null ? kpiBucket(fPx, KPI_FONT_TIERS) : 40) + 'px';
+    const wPx = kpiParsePx(k.width); k.width = (wPx !== null ? kpiBucket(wPx, KPI_WIDTH_TIERS) : 340) + 'px';
   },
   startEdit(id){
     const k = App.kpis.find(x => x.id === id);
