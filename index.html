@@ -1411,6 +1411,24 @@ const Utils = {
     else out = Math.round(abs).toLocaleString('en-IN');
     return sign + prefix + out;
   },
+  // Column Color Formatting (heatmap): each named color maps to a fixed HSL hue. `norm` is a
+  // 0..1 position of the cell's value within its column's min..max range (0 = lowest value,
+  // 1 = highest value). Lightness runs light→dark as norm goes 0→1, giving the "Very Light" to
+  // "Dark" shade progression requested for the selected color. Returns both a background color
+  // and a readable foreground text color (white once the background gets dark enough).
+  COLOR_SCALES: {
+    green:  120, yellow: 48, blue: 210, pink: 330, red: 0, purple: 270, orange: 30, teal: 175
+  },
+  heatColor(colorName, norm){
+    const hue = Utils.COLOR_SCALES[colorName];
+    if (hue === undefined) return null;
+    const n = Math.max(0, Math.min(1, isFinite(norm) ? norm : 0));
+    const lightness = 90 - n * 55;   // 90% (very light) -> 35% (dark)
+    const saturation = colorName === 'yellow' ? 85 : 70;
+    const bg = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+    const fg = lightness < 55 ? '#ffffff' : '#1a1a1a';
+    return { bg, fg };
+  },
   aggregateNumeric(rows, column, agg){
     if (agg === 'count') return rows.length;
     if (agg === 'distinct'){
@@ -2801,10 +2819,25 @@ const TableMgr = {
       if (s.numFmt && s.numFmt !== 'none') return s.numFmt;
       return (cfg.numFmt && cfg.numFmt !== 'none') ? cfg.numFmt : null;
     };
+    // Column Color Formatting (heatmap): a column with a color picked in Column Settings gets its
+    // cells shaded from very-light (lowest value in the column, across the currently filtered rows)
+    // to dark (highest value), independently per column — numbers/currency/percentage all just read
+    // the underlying numeric value, so the same gradient logic covers all three.
+    const colColor = (c) => {
+      const s = (cfg.columnSettings && cfg.columnSettings[c]) || {};
+      return (s.color && s.color !== 'none') ? s.color : null;
+    };
+    const colorRange = {};
+    numericCols.forEach(c => {
+      if (!colColor(c)) return;
+      const vals = filtered.map(r => Utils.toNum(r[c])).filter(v => v !== null && isFinite(v));
+      if (vals.length) colorRange[c] = { min: Math.min(...vals), max: Math.max(...vals) };
+    });
     const columns = cfg.columns.map(c => {
       const isNum = App.columnTypes[c] === 'number';
       const isDate = App.columnTypes[c] === 'date';
-      return {
+      const color = isNum ? colColor(c) : null;
+      const col = {
         title: c, data: c,
         render: (data, type) => {
           if (type !== 'display') return data;
@@ -2817,6 +2850,17 @@ const TableMgr = {
           return data;
         }
       };
+      if (color){
+        col.createdCell = (td, cellData) => {
+          const range = colorRange[c];
+          const v = Utils.toNum(cellData);
+          if (!range || v === null) return;
+          const norm = range.max > range.min ? (v - range.min) / (range.max - range.min) : 0.6;
+          const shade = Utils.heatColor(color, norm);
+          if (shade){ td.style.backgroundColor = shade.bg; td.style.color = shade.fg; }
+        };
+      }
+      return col;
     });
     const dt = $('#dt-' + id).DataTable({
       data: filtered, columns, ordering: cfg.sort, searching: cfg.search, paging: cfg.page,
@@ -5273,7 +5317,12 @@ const UI = {
       // "Average Price" instead of one setting applying to every column.
       const columnSettings = {};
       document.querySelectorAll('#table-colsettings [data-col]').forEach(row => {
-        columnSettings[row.dataset.col] = { agg: row.querySelector('.tcs-agg').value, numFmt: row.querySelector('.tcs-fmt').value };
+        const colorSel = row.querySelector('.tcs-color');
+        columnSettings[row.dataset.col] = {
+          agg: row.querySelector('.tcs-agg').value,
+          numFmt: row.querySelector('.tcs-fmt').value,
+          color: colorSel ? colorSel.value : 'none'
+        };
       });
       const fields = {
         name: document.getElementById('table-name').value.trim(), columns: selectedCols, columnSettings,
@@ -5382,35 +5431,51 @@ const UI = {
     // chip) so re-rendering this list never throws away in-progress choices for columns that stay selected.
     const current = {};
     list.querySelectorAll('[data-col]').forEach(row => {
-      current[row.dataset.col] = { agg: row.querySelector('.tcs-agg').value, numFmt: row.querySelector('.tcs-fmt').value };
+      current[row.dataset.col] = {
+        agg: row.querySelector('.tcs-agg').value,
+        numFmt: row.querySelector('.tcs-fmt').value,
+        color: row.querySelector('.tcs-color') ? row.querySelector('.tcs-color').value : 'none'
+      };
     });
     const editing = App.editId.table ? App.tables.find(t => t.id === App.editId.table) : null;
+    const COLOR_OPTS = [
+      ['none','No color'], ['green','Green'], ['yellow','Yellow'], ['blue','Blue'],
+      ['pink','Pink'], ['red','Red'], ['purple','Purple'], ['orange','Orange'], ['teal','Teal']
+    ];
     list.innerHTML = numericCols.map(c => {
       const saved = current[c]
         || (editing && editing.columnSettings && editing.columnSettings[c])
-        || (editing ? { agg: editing.footerCalc || 'none', numFmt: editing.numFmt || 'none' } : { agg: 'none', numFmt: 'none' });
+        || (editing ? { agg: editing.footerCalc || 'none', numFmt: editing.numFmt || 'none', color: 'none' } : { agg: 'none', numFmt: 'none', color: 'none' });
+      const savedColor = saved.color || 'none';
       return `
-      <div class="row g-1 align-items-center mb-1" data-col="${Utils.esc(c)}">
-        <div class="col-4 small text-truncate" title="${Utils.esc(c)}">${Utils.esc(c)}</div>
-        <div class="col-4">
-          <select class="form-select form-select-sm tcs-agg">
-            <option value="none" ${saved.agg==='none'?'selected':''}>None</option>
-            <option value="sum" ${saved.agg==='sum'?'selected':''}>Sum</option>
-            <option value="avg" ${saved.agg==='avg'?'selected':''}>Average</option>
-            <option value="count" ${saved.agg==='count'?'selected':''}>Count</option>
-            <option value="min" ${saved.agg==='min'?'selected':''}>Minimum</option>
-            <option value="max" ${saved.agg==='max'?'selected':''}>Maximum</option>
-          </select>
-        </div>
-        <div class="col-4">
-          <select class="form-select form-select-sm tcs-fmt">
-            <option value="none" ${saved.numFmt==='none'?'selected':''}>Raw</option>
-            <option value="number" ${saved.numFmt==='number'?'selected':''}>Number</option>
-            <option value="integer" ${saved.numFmt==='integer'?'selected':''}>Integer</option>
-            <option value="decimal" ${saved.numFmt==='decimal'?'selected':''}>Decimal</option>
-            <option value="currency" ${saved.numFmt==='currency'?'selected':''}>₹ INR</option>
-            <option value="percentage" ${saved.numFmt==='percentage'?'selected':''}>Percentage</option>
-          </select>
+      <div class="mb-2 pb-1" data-col="${Utils.esc(c)}" style="border-bottom:1px solid var(--bs-border-color,#e5e7eb);">
+        <div class="small text-truncate fw-semibold mb-1" title="${Utils.esc(c)}">${Utils.esc(c)}</div>
+        <div class="row g-1 align-items-center">
+          <div class="col-4">
+            <select class="form-select form-select-sm tcs-agg" title="Footer aggregation">
+              <option value="none" ${saved.agg==='none'?'selected':''}>None</option>
+              <option value="sum" ${saved.agg==='sum'?'selected':''}>Sum</option>
+              <option value="avg" ${saved.agg==='avg'?'selected':''}>Average</option>
+              <option value="count" ${saved.agg==='count'?'selected':''}>Count</option>
+              <option value="min" ${saved.agg==='min'?'selected':''}>Minimum</option>
+              <option value="max" ${saved.agg==='max'?'selected':''}>Maximum</option>
+            </select>
+          </div>
+          <div class="col-4">
+            <select class="form-select form-select-sm tcs-fmt" title="Number format">
+              <option value="none" ${saved.numFmt==='none'?'selected':''}>Raw</option>
+              <option value="number" ${saved.numFmt==='number'?'selected':''}>Number</option>
+              <option value="integer" ${saved.numFmt==='integer'?'selected':''}>Integer</option>
+              <option value="decimal" ${saved.numFmt==='decimal'?'selected':''}>Decimal</option>
+              <option value="currency" ${saved.numFmt==='currency'?'selected':''}>₹ INR</option>
+              <option value="percentage" ${saved.numFmt==='percentage'?'selected':''}>Percentage</option>
+            </select>
+          </div>
+          <div class="col-4">
+            <select class="form-select form-select-sm tcs-color" title="Column color / heatmap">
+              ${COLOR_OPTS.map(([val,label]) => `<option value="${val}" ${savedColor===val?'selected':''}>${label}</option>`).join('')}
+            </select>
+          </div>
         </div>
       </div>`;
     }).join('');
