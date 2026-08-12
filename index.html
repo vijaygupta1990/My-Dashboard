@@ -4576,7 +4576,7 @@ const UI = {
     const params = new URLSearchParams(location.search);
     const dashId = params.get('d');
     const legacyShared = !dashId ? ShareMgr.loadFromUrl() : false; // old compressed-link format, still supported
-    App.role = (dashId || legacyShared) ? (params.get('role') === 'editor' ? 'editor' : 'viewer') : (params.get('role') === 'viewer' ? 'viewer' : 'editor');
+    App.role = (dashId || legacyShared) ? 'viewer' : (params.get('role') === 'viewer' ? 'viewer' : 'editor');
 
     // The `role` URL param is only a convenience default for people who AREN'T signed in (e.g. an
     // external viewer link). It should never be able to lock out the actual dashboard owner: the
@@ -4585,7 +4585,7 @@ const UI = {
     // control — Apply Join included — silently doing nothing with no explanation. Real authorization
     // already comes from Cloud Sync (CloudMgr.isOwner(), backed by Firestore rules), so once that
     // resolves, a signed-in owner is always treated as an editor regardless of what the URL says.
-    if (CloudMgr.ready && CloudMgr.isOwner()) App.role = 'editor';
+    if (!dashId && !legacyShared && CloudMgr.ready && CloudMgr.isOwner()) App.role = 'editor';
 
     // The Dashboard Maker (opened with no "?d=" share link) is the master/original app and must
     // NOT remember or auto-restore whichever dashboard was last edited on this browser — every
@@ -4858,11 +4858,6 @@ const UI = {
         PermissionMgr.apply('editor');
         UI.reflectCloudStatus();
         UI.updateAuthUI();
-        try {
-          const params = new URLSearchParams(location.search);
-          params.set('role', 'editor');
-          history.replaceState(null, '', location.pathname + '?' + params.toString() + location.hash);
-        } catch(e){}
         bootstrap.Modal.getInstance(document.getElementById('viewer-signin-modal'))?.hide();
         Utils.toast('Signed in — this link is now in edit mode for you');
       } catch(e){ errEl.textContent = 'Sign in failed: ' + e.message; }
