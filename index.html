@@ -3852,7 +3852,7 @@ const PageMgr = {
     App.tables.forEach(t => { LayoutMgr.addWidget('table', t.id, t.name); TableMgr.renderTable(t.id); });
     App.charts.forEach(c => { LayoutMgr.addWidget('chart', c.id, c.title); ChartMgr.renderChart(c.id); });
     (App.textboxes || []).forEach(t => { LayoutMgr.addWidget('textbox', t.id, t.title); TextBoxMgr.wireContentEditable(t.id); });
-    LayoutMgr.restoreLayout(); UI.applyTitleToDom(); KpiMgr.renderList(); KpiMgr.renderCards(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList(); UI.updateStatusBar();
+    LayoutMgr.restoreLayout(); UI.applyTitleToDom(); KpiMgr.renderList(); KpiMgr.renderCards(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList(); UI.renderCalcFieldList(); UI.updateStatusBar();
     UI.renderDataSourceStatus(); UI.populateAllColumnSelectors();
     const autoRefSel = document.getElementById('auto-refresh-select'); if (autoRefSel) autoRefSel.value = App.autoRefreshInterval || 0;
     const gu = document.getElementById('gsheet-url'); if (gu) gu.value = (App.dataSource && App.dataSource.gsheetUrl) || '';
@@ -4657,7 +4657,7 @@ const UI = {
     PageMgr.renderTabs();
     UI.initAutoRefreshTimer();
 
-    KpiMgr.renderList(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList();
+    KpiMgr.renderList(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList(); UI.renderCalcFieldList();
     App.tables.forEach(t => LayoutMgr.addWidget('table', t.id, t.name)); App.charts.forEach(c => LayoutMgr.addWidget('chart', c.id, c.title));
     (App.textboxes || []).forEach(t => { LayoutMgr.addWidget('textbox', t.id, t.title); TextBoxMgr.wireContentEditable(t.id); });
     LayoutMgr.restoreLayout();
@@ -4777,7 +4777,7 @@ const UI = {
     document.getElementById('logo-box').innerHTML = '<i class="fa-solid fa-image text-slate-soft"></i><input type="file" id="logo-input" accept="image/*" hidden>';
     UI.wireTitleBlock(); UI.applyTitleToDom(); UI.renderCrossFilterIndicator();
     LayoutMgr.zTop = 10; LayoutMgr.restoreLayout();
-    KpiMgr.renderList(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList(); UI.populateAllColumnSelectors();
+    KpiMgr.renderList(); FilterMgr.renderList(); FilterMgr.renderBar(); TableMgr.renderList(); ChartMgr.renderList(); TextBoxMgr.renderList(); UI.renderCalcFieldList(); UI.populateAllColumnSelectors();
     document.documentElement.style.removeProperty('--signal'); document.documentElement.style.removeProperty('--signal-deep');
     document.getElementById('theme-accent-custom').value = '#0EA5A0'; document.getElementById('theme-accent-hex').value = '#0EA5A0';
     ThemeMgr.applyBg(null); ThemeMgr.apply('system'); UI.updateStatusBar();
