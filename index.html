@@ -301,10 +301,10 @@ body.viewer-mode .resize-handle{display:none;}
 /* KPI row + cards — responsive 5-column CSS Grid (Row 1 = KPI 1-5, Row 2 = KPI 6-10, ...).
    Cards auto-wrap onto additional rows once there are more than 5 KPI cards, with equal
    spacing/alignment preserved by the grid (see JS-driven auto-fit in fitValueText/autoFitKpis). */
-#kpi-row{display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); grid-auto-rows:1fr; gap:1rem;}
+#kpi-row{display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); grid-auto-rows:1fr; gap:.85rem;}
 .kpi-card{
-  min-width:280px;
-  border-radius:var(--radius-md); padding:1.2rem 1.35rem; position:relative; overflow:hidden;
+  min-width:0;
+  border-radius:var(--radius-md); padding:1.05rem 1.1rem; position:relative; overflow:hidden;
   box-shadow:var(--shadow-soft); width:100%; height:100%;
   border:1px solid var(--border); background:var(--card);
   display:flex; flex-direction:column; justify-content:center; gap:.35rem;
@@ -328,7 +328,7 @@ body.viewer-mode .resize-handle{display:none;}
 .kpi-card .kpi-value{
   font-family:var(--font-mono); font-weight:900; line-height:1; margin:.1rem 0; letter-spacing:-.01em;
   color:var(--ink);
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; width:100%;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; align-self:flex-start;
   font-size:48px;
 }
 .kpi-card .kpi-trend{font-size:.74rem; font-weight:600; display:flex; align-items:center; gap:.25rem;}
@@ -356,10 +356,6 @@ body.viewer-mode .resize-handle{display:none;}
 }
 .kpi-format-toggle button.active{background:var(--signal); color:#04201F;}
 .kpi-format-toggle button:not(.active):hover{color:var(--ink);}
-
-@media (max-width:576px){
-  .kpi-card .kpi-value{font-size:32px;}
-}
 
 /* ---------- Full-page gates: share password prompt + "link no longer valid" screen ----------
    Both take over the entire viewport above everything else. While either is active the real app
@@ -2438,7 +2434,10 @@ const KpiMgr = {
       el.style.whiteSpace = 'nowrap';
       const cardStyle = getComputedStyle(card);
       const maxWidth = card.clientWidth - parseFloat(cardStyle.paddingLeft || 0) - parseFloat(cardStyle.paddingRight || 0) - 2;
-      const MIN_PX = 11;
+      // Floor scales with the card's own width so a narrow card in a 5-up row still gets a
+      // reasonably big number (never smaller than ~22px), while a wider card can shrink a bit
+      // further before it's forced to ellipsis. Never a fixed tiny value like the old 11px floor.
+      const MIN_PX = Math.max(22, Math.min(30, Math.round(card.clientWidth * 0.12)));
       let guard = 0;
       while (el.scrollWidth > maxWidth && guard < 80){
         const size = parseFloat(getComputedStyle(el).fontSize);
