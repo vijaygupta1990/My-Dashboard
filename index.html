@@ -1142,10 +1142,54 @@ service cloud.firestore {
           </div>
           <div class="row g-2 mb-2">
             <div class="col-6"><label class="form-label mini">Group By (series)</label><select class="form-select form-select-sm" id="chart-group"></select></div>
-            <div class="col-6"><label class="form-label mini">Aggregation</label>
-              <select class="form-select form-select-sm" id="chart-agg">
-                <option value="sum">Sum</option><option value="count">Count</option><option value="avg">Average</option>
-                <option value="min">Minimum</option><option value="max">Maximum</option>
+            <div class="col-6"><label class="form-label mini" id="chart-agg-label">Aggregation</label>
+              <select class="form-select form-select-sm" id="chart-agg"></select>
+            </div>
+          </div>
+          <div class="row g-2 mb-2 d-none" id="chart-combo-row">
+            <div class="col-6"><label class="form-label mini">Line Value / Series</label><select class="form-select form-select-sm" id="chart-combo-line-y"></select></div>
+            <div class="col-6"><label class="form-label mini">Line Aggregation</label>
+              <select class="form-select form-select-sm" id="chart-combo-line-agg"></select>
+            </div>
+            <div class="col-6"><label class="form-label mini">Bar → Axis</label>
+              <select class="form-select form-select-sm" id="chart-combo-bar-axis">
+                <option value="primary">Primary (left)</option><option value="secondary">Secondary (right)</option>
+              </select>
+            </div>
+            <div class="col-6"><label class="form-label mini">Line → Axis</label>
+              <select class="form-select form-select-sm" id="chart-combo-line-axis">
+                <option value="secondary">Secondary (right)</option><option value="primary">Primary (left)</option>
+              </select>
+            </div>
+          </div>
+          <div class="row g-2 mb-2 d-none" id="chart-mixed-row">
+            <div class="col-12"><label class="form-label mini mb-1">Series (each with its own field, aggregation &amp; axis)</label></div>
+            <div class="col-12 d-flex gap-2 mb-2" id="chart-mixed-series-1">
+              <select class="form-select form-select-sm" id="chart-mixed-field-1" style="flex:2"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-agg-1" style="flex:1"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-axis-1" style="flex:1">
+                <option value="primary">Y1 (left)</option><option value="secondary">Y2 (right)</option>
+              </select>
+            </div>
+            <div class="col-12 d-flex gap-2 mb-2" id="chart-mixed-series-2">
+              <select class="form-select form-select-sm" id="chart-mixed-field-2" style="flex:2"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-agg-2" style="flex:1"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-axis-2" style="flex:1">
+                <option value="secondary">Y2 (right)</option><option value="primary">Y1 (left)</option>
+              </select>
+            </div>
+            <div class="col-12 d-flex gap-2 mb-2" id="chart-mixed-series-3">
+              <select class="form-select form-select-sm" id="chart-mixed-field-3" style="flex:2"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-agg-3" style="flex:1"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-axis-3" style="flex:1">
+                <option value="primary">Y1 (left)</option><option value="secondary">Y2 (right)</option>
+              </select>
+            </div>
+            <div class="col-12 d-flex gap-2 mb-1" id="chart-mixed-series-4">
+              <select class="form-select form-select-sm" id="chart-mixed-field-4" style="flex:2"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-agg-4" style="flex:1"></select>
+              <select class="form-select form-select-sm" id="chart-mixed-axis-4" style="flex:1">
+                <option value="secondary">Y2 (right)</option><option value="primary">Y1 (left)</option>
               </select>
             </div>
           </div>
@@ -1442,14 +1486,25 @@ const Utils = {
       for (let i=0;i<rows.length;i++) set.add(rows[i][column]);
       return set.size;
     }
-    let sum = 0, count = 0, min = Infinity, max = -Infinity;
+    const nums = [];
     for (let i=0;i<rows.length;i++){
       const n = Utils.toNum(rows[i][column]);
-      if (n === null) continue;
-      sum += n; count++;
+      if (n !== null) nums.push(n);
+    }
+    if (agg === 'median'){
+      if (!nums.length) return 0;
+      const sorted = nums.slice().sort((a,b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
+    }
+    let sum = 0, min = Infinity, max = -Infinity;
+    for (let i=0;i<nums.length;i++){
+      const n = nums[i];
+      sum += n;
       if (n < min) min = n;
       if (n > max) max = n;
     }
+    const count = nums.length;
     switch(agg){
       case 'sum': return sum;
       case 'avg': return count ? sum / count : 0;
@@ -1482,6 +1537,13 @@ const Utils = {
   fyStartYear(d){ const m = d.getMonth()+1, y = d.getFullYear(); return m >= 4 ? y : y - 1; },
   fyLabel(startYear){ return `${startYear}-${String((startYear+1) % 100).padStart(2,'0')}`; },
   fyQuarter(calMonth){ return calMonth >= 4 && calMonth <= 6 ? 1 : calMonth >= 7 && calMonth <= 9 ? 2 : calMonth >= 10 && calMonth <= 12 ? 3 : 4; },
+  // Single source of truth for every per-series aggregation dropdown (chart Bar/Line aggregation,
+  // Mixed Multi-Axis series 1-4). Populated into the <select> elements by UI.populateAggSelectors()
+  // instead of being duplicated as literal <option> markup in each dropdown.
+  AGG_OPTIONS: [
+    ['sum','Sum'], ['count','Count'], ['distinct','Distinct Count'],
+    ['avg','Average'], ['min','Minimum'], ['max','Maximum'], ['median','Median']
+  ],
   // Date-aggregation labels for the "Date Format" dropdown (chart X-axis + table date columns).
   // month/quarter labels are deliberately year-less (e.g. "Apr", "Q1") so rows from every year
   // roll up into the same bucket, matching how "Month" and "Quarter" are meant to summarise.
@@ -3000,6 +3062,16 @@ const ChartMgr = {
     document.getElementById('chart-bins').value = c.bins ?? '';
     document.getElementById('chart-group').value = c.group || '';
     document.getElementById('chart-agg').value = c.agg;
+    document.getElementById('chart-combo-line-y').value = c.comboLineY || '';
+    document.getElementById('chart-combo-line-agg').value = c.comboLineAgg || 'sum';
+    document.getElementById('chart-combo-bar-axis').value = c.comboBarAxis || 'primary';
+    document.getElementById('chart-combo-line-axis').value = c.comboLineAxis || 'secondary';
+    for (let i=1;i<=4;i++){
+      const s = (c.mixedSeries || [])[i-1] || {};
+      document.getElementById('chart-mixed-field-'+i).value = s.field || '';
+      document.getElementById('chart-mixed-agg-'+i).value = s.agg || 'sum';
+      document.getElementById('chart-mixed-axis-'+i).value = s.axis || (i % 2 === 1 ? 'primary' : 'secondary');
+    }
     document.getElementById('chart-dateagg').value = ({ none:'day', quarter:'month', monthyear:'year' })[c.dateAgg] || c.dateAgg || 'day';
     document.getElementById('chart-legend').checked = c.legend;
     document.getElementById('chart-datalabels').checked = c.datalabels;
@@ -3109,6 +3181,33 @@ const ChartMgr = {
       data: s.data.map((v, li) => [v, (maxAgg.series[i] && maxAgg.series[i].data[li] !== undefined) ? maxAgg.series[i].data[li] : v])
     }));
     return { labels: minAgg.labels, series };
+  },
+  // Combo (Bar + Line): same bucketing as aggregate(), run twice — once for the Bar field/agg,
+  // once for the Line field/agg — so the two series come from independent columns instead of
+  // relying on a Group By split (which is what silently produced only one series before this fix).
+  aggregateCombo(rows, xCol, barY, lineY, barAgg, lineAgg, xOrder, dateAgg){
+    const barRes = ChartMgr.aggregate(rows, xCol, barY, null, barAgg, xOrder, dateAgg);
+    const lineRes = ChartMgr.aggregate(rows, xCol, lineY || barY, null, lineAgg || barAgg, xOrder, dateAgg);
+    return {
+      labels: barRes.labels,
+      series: [
+        { name: barY, data: barRes.series[0].data },
+        { name: lineY || barY, data: lineRes.series[0].data }
+      ]
+    };
+  },
+  // Mixed Multi-Axis with per-series config: each entry in seriesDefs is an independent
+  // {field, agg, axis} — same one-call-per-field pattern as aggregateCombo/aggregateRange above,
+  // just generalized to N series instead of a fixed 2. Labels come from the first series' bucketing
+  // (same xCol for every series, so the label set is identical either way).
+  aggregateMultiSeries(rows, xCol, seriesDefs, xOrder, dateAgg){
+    if (!seriesDefs.length) return { labels: [], series: [] };
+    const first = ChartMgr.aggregate(rows, xCol, seriesDefs[0].field, null, seriesDefs[0].agg, xOrder, dateAgg);
+    const series = seriesDefs.map((sd, i) => {
+      const data = i === 0 ? first.series[0].data : ChartMgr.aggregate(rows, xCol, sd.field, null, sd.agg, xOrder, dateAgg).series[0].data;
+      return { name: sd.field, data, axis: sd.axis };
+    });
+    return { labels: first.labels, series };
   },
   // Histogram: bins a numeric X field into equal-width ranges and counts (or aggregates Y within)
   // each bin — the one type here that doesn't bucket by a categorical X value.
@@ -3228,6 +3327,14 @@ const ChartMgr = {
     else if (isBinned) ({ labels, series, bounds } = ChartMgr.buildHistogram(filtered, cfg.x, cfg.y, cfg.agg, cfg.bins));
     else if (isPareto) ({ labels, series } = ChartMgr.buildPareto(filtered, cfg.x, cfg.y, cfg.agg, cfg.xOrder, cfg.dateAgg));
     else if (isWaterfall) ({ labels, series } = ChartMgr.buildWaterfall(filtered, cfg.x, cfg.y, cfg.agg, cfg.xOrder, cfg.dateAgg));
+    // Combo charts with a Line field configured use the dedicated dual-column aggregation below;
+    // combo charts saved before this fix (no comboLineY yet) keep falling through to the original
+    // Group-By-driven aggregate() call so nothing already on a dashboard breaks.
+    else if (isCombo && cfg.comboLineY) ({ labels, series } = ChartMgr.aggregateCombo(filtered, cfg.x, cfg.y, cfg.comboLineY, cfg.agg, cfg.comboLineAgg || 'sum', cfg.xOrder, cfg.dateAgg));
+    // Mixed Multi-Axis with per-series fields configured (Series 1-4) uses the dedicated N-series
+    // aggregation; a mixedaxis chart saved before this fix (no cfg.mixedSeries yet) keeps falling
+    // through to the original Group-By-driven aggregate() call so it renders exactly as before.
+    else if (isMixedAxis && cfg.mixedSeries && cfg.mixedSeries.length) ({ labels, series } = ChartMgr.aggregateMultiSeries(filtered, cfg.x, cfg.mixedSeries, cfg.xOrder, cfg.dateAgg));
     else ({ labels, series } = ChartMgr.aggregate(filtered, cfg.x, cfg.y, cfg.group, cfg.agg, cfg.xOrder, cfg.dateAgg));
 
     const isLineFamily = meta.jsType === 'line';
@@ -3252,17 +3359,29 @@ const ChartMgr = {
         { type:'line', label: 'Cumulative %', data: series[1].data, borderColor:'#E5484D', backgroundColor:'#E5484D', yAxisID:'y1', tension:0, borderWidth:2, pointRadius:3, fill:false, order: 1 }
       ];
     } else if (isCombo){
+      // Bar defaults to the primary (left) axis, Line defaults to the secondary (right) axis —
+      // both configurable. Legacy combo configs (no comboLineY / comboLineAxis saved) resolve to
+      // 'y' for both, which is exactly the single-axis behaviour they already had.
+      const comboBarAxisId = cfg.comboBarAxis === 'secondary' ? 'y1' : 'y';
+      const comboLineAxisId = cfg.comboLineY ? (cfg.comboLineAxis === 'primary' ? 'y' : 'y1') : 'y';
       datasets = series.map((s,i) => ({
         type: i === 0 ? 'bar' : 'line', label: s.name, data: s.data,
         backgroundColor: i === 0 ? labels.map((_,li) => dim(Utils.colorFor(i), li)) : 'transparent',
-        borderColor: Utils.colorFor(i), borderWidth: 2, tension: i === 0 ? 0 : 0.35, fill: false
+        borderColor: Utils.colorFor(i), borderWidth: 2, tension: i === 0 ? 0 : 0.35, fill: false,
+        yAxisID: i === 0 ? comboBarAxisId : comboLineAxisId
       }));
     } else if (isMixedAxis){
-      datasets = series.map((s,i) => ({
-        type: i % 2 === 0 ? 'bar' : 'line', label: s.name, data: s.data, yAxisID: i % 2 === 0 ? 'y' : 'y1',
-        backgroundColor: i % 2 === 0 ? labels.map((_,li) => dim(Utils.colorFor(i), li)) : 'transparent',
-        borderColor: Utils.colorFor(i), borderWidth: 2, tension: i % 2 === 0 ? 0 : 0.35, fill: false
-      }));
+      // s.axis is only set when the new per-series Mixed Multi-Axis config was used; legacy
+      // Group-By-driven series (s.axis undefined) keep the original alternating y/y1 assignment.
+      datasets = series.map((s,i) => {
+        const isBarType = i % 2 === 0;
+        const axisId = s.axis ? (s.axis === 'secondary' ? 'y1' : 'y') : (isBarType ? 'y' : 'y1');
+        return {
+          type: isBarType ? 'bar' : 'line', label: s.name, data: s.data, yAxisID: axisId,
+          backgroundColor: isBarType ? labels.map((_,li) => dim(Utils.colorFor(i), li)) : 'transparent',
+          borderColor: Utils.colorFor(i), borderWidth: 2, tension: isBarType ? 0 : 0.35, fill: false
+        };
+      });
     } else if (isRangeFamily && meta.family === 'rangearea'){
       datasets = series.flatMap((s,i) => ([
         { label: s.name + ' (min)', data: s.data.map(p => p[0]), borderColor:'transparent', backgroundColor:'transparent', pointRadius:0, fill:false, order:2, tension:0.3 },
@@ -3296,6 +3415,7 @@ const ChartMgr = {
       };
       if (isPareto) scales.y1 = { position:'right', min:0, max:100, grid:{ display:false }, ticks:{ color: slate, callback:v=>v+'%' } };
       if (isMixedAxis) scales.y1 = { position:'right', grid:{ display:false }, ticks:{ color: slate } };
+      if (isCombo && (cfg.comboBarAxis === 'secondary' || (cfg.comboLineY && cfg.comboLineAxis !== 'primary'))) scales.y1 = { position:'right', grid:{ display:false }, ticks:{ color: slate } };
     }
 
     const options = ChartMgr.baseOptions(cfg, {
@@ -5207,7 +5327,7 @@ const UI = {
     document.getElementById('sb-file').textContent = App.fileName || 'none';
   },
   populateAllColumnSelectors(){
-    const selects = ['kpi-column','filter-column','chart-x','chart-y','chart-ymax','chart-size'];
+    const selects = ['kpi-column','filter-column','chart-x','chart-y','chart-ymax','chart-size','chart-combo-line-y'];
     selects.forEach(id => {
       const sel = document.getElementById(id); const cur = sel.value;
       sel.innerHTML = App.columns.map(c => `<option value="${Utils.esc(c)}">${Utils.esc(c)}</option>`).join('');
@@ -5215,6 +5335,17 @@ const UI = {
     });
     const groupSel = document.getElementById('chart-group');
     groupSel.innerHTML = '<option value="">None</option>' + App.columns.map(c => `<option value="${Utils.esc(c)}">${Utils.esc(c)}</option>`).join('');
+    // Mixed Multi-Axis series 1 is required (plain column list, like chart-y); series 2-4 are
+    // optional extra series, so they get a leading "None" option the same way Group By does.
+    const colOptsHtml = App.columns.map(c => `<option value="${Utils.esc(c)}">${Utils.esc(c)}</option>`).join('');
+    const mixedField1 = document.getElementById('chart-mixed-field-1');
+    if (mixedField1){ const cur = mixedField1.value; mixedField1.innerHTML = colOptsHtml; if (App.columns.includes(cur)) mixedField1.value = cur; }
+    [2,3,4].forEach(i => {
+      const sel = document.getElementById('chart-mixed-field-' + i); if (!sel) return;
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">— None —</option>' + colOptsHtml;
+      if (App.columns.includes(cur)) sel.value = cur;
+    });
     const picker = document.getElementById('table-col-picker');
     picker.innerHTML = App.columns.map(c => `<span class="filter-chip active" data-c="${Utils.esc(c)}" title="Click to include/exclude · drag to reorder"><i class="fa-solid fa-grip-vertical me-1" style="opacity:.5"></i>${Utils.esc(c)}</span>`).join('');
     picker.querySelectorAll('.filter-chip').forEach(chip => { chip.addEventListener('click', (e) => { if (!chip.dataset.dragging){ chip.classList.toggle('active'); UI.applyTableDateAggVisibility(); UI.renderTableColumnSettings(); } }); });
@@ -5363,6 +5494,7 @@ const UI = {
     });
   },
   wireChartForm(){
+    UI.populateAggSelectors();
     document.getElementById('chart-x').addEventListener('change', () => { UI.populateChartXOrderPicker(); UI.applyChartDateAggVisibility(); });
     document.getElementById('chart-type').addEventListener('change', () => { UI.applyChartTypeFieldVisibility(); UI.applyChartDateAggVisibility(); });
     // Selecting a Date Format updates the live chart preview immediately when editing an
@@ -5385,6 +5517,13 @@ const UI = {
         target: document.getElementById('chart-target').value ? Number(document.getElementById('chart-target').value) : null,
         bins: document.getElementById('chart-bins').value ? Number(document.getElementById('chart-bins').value) : null,
         agg: document.getElementById('chart-agg').value, dateAgg: document.getElementById('chart-dateagg').value, legend: document.getElementById('chart-legend').checked, datalabels: document.getElementById('chart-datalabels').checked,
+        comboLineY: document.getElementById('chart-combo-line-y').value, comboLineAgg: document.getElementById('chart-combo-line-agg').value,
+        comboBarAxis: document.getElementById('chart-combo-bar-axis').value, comboLineAxis: document.getElementById('chart-combo-line-axis').value,
+        mixedSeries: [1,2,3,4].map(i => ({
+          field: document.getElementById('chart-mixed-field-'+i).value,
+          agg: document.getElementById('chart-mixed-agg-'+i).value,
+          axis: document.getElementById('chart-mixed-axis-'+i).value
+        })).filter(s => s.field),
         tooltip: document.getElementById('chart-tooltip').checked, grid: document.getElementById('chart-grid').checked, animation: document.getElementById('chart-animation').checked,
         trendline: document.getElementById('chart-trendline').checked, multiColor: document.getElementById('chart-multicolor').checked, xOrder: Array.from(document.querySelectorAll('#chart-xorder-picker .filter-chip')).map(c => c.dataset.v)
       };
@@ -5401,9 +5540,20 @@ const UI = {
   // Shows/hides the Y-Max, Size, Target and Bins fields depending on which chart type is selected,
   // and relabels X/Y so the form stays self-explanatory for every chart family (e.g. Gauge/Bullet
   // aggregate a single value, so X becomes "Category (optional)" rather than a required axis).
+  // Fills every per-series aggregation dropdown (Bar/Line combo aggregation + Mixed Multi-Axis
+  // series 1-4) from the single Utils.AGG_OPTIONS list, defaulting each to 'sum' — called once
+  // at form setup so the option markup exists in exactly one place instead of six.
+  populateAggSelectors(){
+    const optsHtml = Utils.AGG_OPTIONS.map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+    ['chart-agg','chart-combo-line-agg','chart-mixed-agg-1','chart-mixed-agg-2','chart-mixed-agg-3','chart-mixed-agg-4'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (sel) sel.innerHTML = optsHtml;
+    });
+  },
   applyChartTypeFieldVisibility(){
     const type = document.getElementById('chart-type').value;
     const meta = ChartMgr.META[type] || ChartMgr.META.bar;
+    const isCombo = type === 'combo';
     document.getElementById('chart-ymax-row').classList.toggle('d-none', !meta.needsYMax && !meta.needsSize);
     document.getElementById('chart-target-row').classList.toggle('d-none', !meta.needsTarget && type !== 'histogram');
     document.getElementById('chart-ymax').closest('.col-6').classList.toggle('d-none', !meta.needsYMax);
@@ -5411,7 +5561,11 @@ const UI = {
     document.getElementById('chart-target').closest('.col-6').classList.toggle('d-none', !meta.needsTarget);
     document.getElementById('chart-bins').closest('.col-6').classList.toggle('d-none', type !== 'histogram');
     document.getElementById('chart-x-label').textContent = meta.singleValue ? 'Category (optional)' : 'X Axis';
-    document.getElementById('chart-y-label').textContent = meta.needsYMax ? 'Y Axis (Min)' : 'Y Axis';
+    document.getElementById('chart-y-label').textContent = meta.needsYMax ? 'Y Axis (Min)' : (isCombo ? 'Bar Value / Series' : 'Y Axis');
+    const aggLabel = document.getElementById('chart-agg-label');
+    if (aggLabel) aggLabel.textContent = isCombo ? 'Bar Aggregation' : 'Aggregation';
+    document.getElementById('chart-combo-row').classList.toggle('d-none', !isCombo);
+    document.getElementById('chart-mixed-row').classList.toggle('d-none', type !== 'mixedaxis');
     const trendRow = document.getElementById('chart-trendline').closest('.form-check');
     if (trendRow) trendRow.classList.toggle('d-none', !meta.allowTrendline);
   },
