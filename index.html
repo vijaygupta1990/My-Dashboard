@@ -2890,7 +2890,9 @@ const TableMgr = {
         <button class="tb-btn tb-mini" data-act="print"><i class="fa-solid fa-print"></i> Print</button>
       </div>
       <div style="overflow-x:auto;">
-        <table id="dt-${id}" class="table table-sm table-hover w-100"></table>
+        <table id="dt-${id}" class="table table-sm table-hover w-100">
+          <tfoot><tr class="grand-total-row">${cfg.columns.map(() => '<th></th>').join('')}</tr></tfoot>
+        </table>
       </div>`;
 
     if (App.tableInstances[id]) { App.tableInstances[id].destroy(); }
@@ -2984,10 +2986,9 @@ const TableMgr = {
       }
     });
     App.tableInstances[id] = dt;
-    // A <tfoot> must exist before init for DataTables to call footerCallback — add it now and
-    // trigger one draw so the Grand Total row appears immediately, not just after the first
-    // search/page/sort event.
-    if (!$('#dt-' + id + ' tfoot').length) $(`<tfoot><tr>${cfg.columns.map(() => '<th></th>').join('')}</tr></tfoot>`).appendTo($('#dt-' + id));
+    // The <tfoot> is already in the table markup above (built before this .DataTable() call), so
+    // DataTables registered it as the real footer node at init time and footerCallback can render
+    // into it immediately — no need to append/re-detect a tfoot after the fact.
     dt.draw(false);
 
     const body = container;
