@@ -111,6 +111,8 @@
   --radius-lg:16px;
   --radius-md:12px;
   --radius-sm:8px;
+  --content-max:1600px; /* fixed, centered dashboard content boundary — see #dashboard-canvas */
+  --row-gap:.85rem; /* shared row/column spacing for filter-bar + kpi-row so both grids match */
   --shadow-soft:0 1px 2px rgba(16,21,31,.04), 0 8px 24px -12px rgba(16,21,31,.12);
   --shadow-hover:0 2px 4px rgba(16,21,31,.06), 0 16px 32px -12px rgba(16,21,31,.18);
   --font-display:'Sora',system-ui,sans-serif;
@@ -229,6 +231,10 @@ a{color:var(--signal-deep);}
 #dash-company{font-size:.72rem; color:var(--slate-soft); font-weight:600; text-transform:uppercase; letter-spacing:.05em;}
 
 /* ---------- Freeform dashboard canvas ---------- */
+/* Fixed, centered content boundary: both the title block and the freeform canvas share the same
+   max-width + centering, so their left/right edges — and the visible border lines that mark
+   them — always line up as one consistent container across desktop/laptop/tablet. */
+#dash-header, #dashboard-canvas{max-width:var(--content-max); margin-left:auto; margin-right:auto;}
 #dashboard-canvas{position:relative; width:100%; min-height:300px; border:1px solid var(--border); border-radius:var(--radius-md); padding:16px;}
 #dashboard-canvas.grid-on{
   background-image:linear-gradient(to right, var(--border) 1px, transparent 1px), linear-gradient(to bottom, var(--border) 1px, transparent 1px);
@@ -301,7 +307,7 @@ body.viewer-mode .resize-handle{display:none;}
 /* KPI row + cards — responsive 5-column CSS Grid (Row 1 = KPI 1-5, Row 2 = KPI 6-10, ...).
    Cards auto-wrap onto additional rows once there are more than 5 KPI cards, with equal
    spacing/alignment preserved by the grid (see JS-driven auto-fit in fitValueText/autoFitKpis). */
-#kpi-row{display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); grid-auto-rows:1fr; gap:.85rem;}
+#kpi-row{display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); grid-auto-rows:1fr; gap:var(--row-gap);}
 .kpi-card{
   min-width:0;
   border-radius:var(--radius-md); padding:1.05rem 1.1rem; position:relative; overflow:hidden;
@@ -406,7 +412,7 @@ body.link-invalid-active #app-shell{display:none;}
 .page-tab .pt-close:hover{opacity:1; color:var(--coral);}
 
 /* Filter bar — responsive 7-column CSS Grid (Row 1 = Filters 1-7, Row 2 = Filters 8-14, ...) */
-#filter-bar{display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); grid-auto-rows:1fr; gap:.75rem;}
+#filter-bar{display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); grid-auto-rows:1fr; gap:var(--row-gap);}
 .filter-ctrl{min-width:0; width:100%; height:100%; display:flex; flex-direction:column; justify-content:flex-end;}
 .filter-ctrl label{font-size:.72rem; font-weight:700; color:var(--slate-soft); text-transform:uppercase; letter-spacing:.04em; margin-bottom:.2rem; display:block;}
 .filter-ctrl .form-select, .filter-ctrl .form-control{font-size:.83rem; width: 100%;}
@@ -2778,6 +2784,9 @@ const TableMgr = {
     });
     picker.querySelectorAll('.filter-chip').forEach(chip => chip.classList.toggle('active', t.columns.includes(chip.dataset.c)));
     UI.applyTableDateAggVisibility();
+    // Clear any settings rows left over from a previous render so they don't get read back as
+    // "current" (see renderTableColumnSettings) and shadow this table's actually-saved settings.
+    document.getElementById('table-colsettings').innerHTML = '';
     UI.renderTableColumnSettings();
     UI.switchSidebarTab('pane-table');
     document.querySelector('#table-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-check"></i> Update Table';
@@ -2786,6 +2795,7 @@ const TableMgr = {
     App.editId.table = null; document.getElementById('table-form').reset();
     document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active'));
     UI.applyTableDateAggVisibility();
+    document.getElementById('table-colsettings').innerHTML = '';
     UI.renderTableColumnSettings();
     document.querySelector('#table-form button[type="submit"]').innerHTML = '<i class="fa-solid fa-plus"></i> Add Table';
   },
@@ -3707,7 +3717,12 @@ const LayoutMgr = {
     // the height/width we set), so widgets keep the same breathing room below/right as before.
     if (!LayoutMgr.canvas.classList.contains('stacked-mode')){
       LayoutMgr.canvas.style.height = (maxY + 60 + 16) + 'px';
-      LayoutMgr.canvas.style.minWidth = (maxX + 40 + 16) + 'px';
+      // Cap at the canvas's own CSS-constrained width (100% of its parent, up to --content-max)
+      // so this never grows the canvas past the fixed content boundary that dragging/resizing
+      // is already clamped to above.
+      LayoutMgr.canvas.style.minWidth = '';
+      const widthCap = LayoutMgr.canvas.clientWidth;
+      LayoutMgr.canvas.style.minWidth = Math.min(maxX + 40 + 16, widthCap) + 'px';
     }
   },
 
@@ -3727,7 +3742,10 @@ const LayoutMgr = {
     function onMove(e){
       let nx = origX + (e.clientX - startX), ny = origY + (e.clientY - startY);
       if (LayoutMgr.snapEnabled){ nx = Math.round(nx / LayoutMgr.GRID) * LayoutMgr.GRID; ny = Math.round(ny / LayoutMgr.GRID) * LayoutMgr.GRID; }
-      pendX = Math.max(0, nx); pendY = Math.max(0, ny);
+      // Keep the widget's right edge inside the canvas's fixed content boundary (see --content-max)
+      // so dragging can never push a chart/table/textbox out past the container's border lines.
+      const maxX = Math.max(0, LayoutMgr.canvas.clientWidth - 32 - g.w);
+      pendX = Math.min(maxX, Math.max(0, nx)); pendY = Math.max(0, ny);
       if (!raf) raf = requestAnimationFrame(() => { el.style.left = pendX + 'px'; el.style.top = pendY + 'px'; raf = null; });
     }
     function onUp(){
@@ -3760,6 +3778,12 @@ const LayoutMgr = {
       h = Math.max(d.minH, Math.min(d.maxH, h));
       if (dir.includes('w')) x = orig.x + (orig.w - w);
       if (dir.includes('n')) y = orig.y + (orig.h - h);
+      // Same fixed content boundary as dragging: growing to the east can't push the widget's
+      // right edge past the canvas's inner width.
+      if (dir.includes('e')){
+        const availW = Math.max(d.minW, LayoutMgr.canvas.clientWidth - 32 - x);
+        w = Math.min(w, availW);
+      }
       if (LayoutMgr.snapEnabled){
         w = Math.round(w / LayoutMgr.GRID) * LayoutMgr.GRID; h = Math.round(h / LayoutMgr.GRID) * LayoutMgr.GRID;
         x = Math.round(x / LayoutMgr.GRID) * LayoutMgr.GRID; y = Math.round(y / LayoutMgr.GRID) * LayoutMgr.GRID;
@@ -5333,7 +5357,8 @@ const UI = {
         TableMgr.cancelEdit(); TableMgr.renderList(); TableMgr.renderTable(existing.id); Utils.toast(`Table "${fields.name}" updated`);
       } else {
         const cfg = { id: nextId('tbl'), ...fields }; TableMgr.addTable(cfg); e.target.reset();
-        document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active')); UI.applyTableDateAggVisibility(); UI.renderTableColumnSettings(); Utils.toast(`Table "${cfg.name}" added`);
+        document.querySelectorAll('#table-col-picker .filter-chip').forEach(c => c.classList.add('active')); UI.applyTableDateAggVisibility();
+        document.getElementById('table-colsettings').innerHTML = ''; UI.renderTableColumnSettings(); Utils.toast(`Table "${cfg.name}" added`);
       }
     });
   },
