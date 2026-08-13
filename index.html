@@ -480,7 +480,13 @@ table.dataTable thead th{
   background:var(--mist); color:var(--slate); position:relative; user-select:none;
 }
 .col-resizer{position:absolute; right:0; top:0; width:6px; height:100%; cursor:col-resize; z-index:5;}
-tfoot th{font-family:var(--font-mono); font-weight:600; background:var(--mist-deep) !important;}
+/* Grand Total row — always bold, visually distinct from normal rows, and (being a native <tfoot>)
+   always renders as the table's last row regardless of which page is showing. */
+table.dataTable tfoot, tr.grand-total-row{position:relative;}
+tfoot th, tr.grand-total-row th{
+  font-family:var(--font-mono); font-weight:800; background:var(--mist-deep) !important; color:var(--ink);
+  border-top:2px solid var(--border) !important;
+}
 .table-toolbar{display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:.6rem;}
 .table-toolbar .tb-mini{font-size:.74rem; padding:.28rem .55rem;}
 
@@ -2868,6 +2874,13 @@ const TableMgr = {
     if (!container) return;
     const filtered = DataMgr.getFiltered();
     const numericCols = cfg.columns.filter(c => App.columnTypes[c] === 'number');
+    // Hide a row only when EVERY visible numeric column is 0 for it — a row with at least one
+    // nonzero visible measure still shows, and a table with no numeric columns at all is untouched
+    // (nothing to test against). Kept as its own array so exports/CSV/Excel/Copy match what's
+    // actually on screen, while the Grand Total below still sums the true filtered set.
+    const visRows = numericCols.length
+      ? filtered.filter(r => numericCols.some(c => { const v = Utils.toNum(r[c]); return v !== null && v !== 0; }))
+      : filtered;
 
     container.innerHTML = `
       <div class="table-toolbar no-print">
@@ -2934,46 +2947,53 @@ const TableMgr = {
       }
       return col;
     });
-    const dt = $('#dt-' + id).DataTable({
-      data: filtered, columns, ordering: cfg.sort, searching: cfg.search, paging: cfg.page,
-      pageLength: 10, deferRender: true, scrollX: true,
-      language: { emptyTable: 'No matching records' },
-      footerCallback: function(){ /* footer content built manually below, per-column */ }
-    });
-    App.tableInstances[id] = dt;
-
     // Per-column footer aggregation: an explicit cfg.columnSettings[c].agg wins; otherwise fall back
     // to the dashboard's old global cfg.footerCalc, so pre-existing tables keep showing what they
-    // already showed until someone opts a column into its own setting.
-    const AGG_LABEL = { sum: 'Sum', avg: 'Average', count: 'Count', min: 'Min', max: 'Max' };
+    // already showed until someone opts a column into its own setting. Grand Total defaults an
+    // unconfigured numeric column to Sum (handled in footerCallback below) rather than leaving it blank.
     const colAgg = (c) => {
       const s = (cfg.columnSettings && cfg.columnSettings[c]) || {};
       if (s.agg && s.agg !== 'none') return s.agg;
       return (cfg.footerCalc && cfg.footerCalc !== 'none') ? cfg.footerCalc : null;
     };
-    const anyFooterAgg = numericCols.some(c => colAgg(c));
-    if (anyFooterAgg){
-      const $table = $('#dt-' + id);
-      let $tfoot = $table.find('tfoot');
-      if (!$tfoot.length){ $tfoot = $('<tfoot><tr></tr></tfoot>').appendTo($table); }
-      const $tr = $tfoot.find('tr').length ? $tfoot.find('tr') : $('<tr></tr>').appendTo($tfoot);
-      $tr.empty();
-      cfg.columns.forEach(c => {
-        const agg = numericCols.includes(c) ? colAgg(c) : null;
-        if (agg){
-          const val = Utils.aggregateNumeric(filtered, c, agg);
+    const dt = $('#dt-' + id).DataTable({
+      data: visRows, columns, ordering: cfg.sort, searching: cfg.search, paging: cfg.page,
+      pageLength: 10, deferRender: true, scrollX: true,
+      language: { emptyTable: 'No matching records' },
+      // Grand Total row: always present (not conditional on a column having a configured footer
+      // aggregation — an unconfigured numeric column defaults to Sum for this row specifically),
+      // and recomputed from api.rows({search:'applied'}) — i.e. every row DataTables' own search box
+      // currently matches, across ALL pages, not just the 10 rows on screen — so it stays correct
+      // through table search and pagination without a separate code path for either. Dashboard-level
+      // filters/cross-filters are already covered because they change `visRows` itself, which
+      // triggers a full renderTable() (and therefore a fresh footerCallback) on every change.
+      footerCallback: function(){
+        const api = this.api();
+        const $tfoot = $(api.table().footer());
+        if (!$tfoot.length) return;
+        let $tr = $tfoot.find('tr'); if (!$tr.length) $tr = $('<tr class="grand-total-row"></tr>').appendTo($tfoot);
+        $tr.empty();
+        const matched = api.rows({ search: 'applied' }).data().toArray();
+        cfg.columns.forEach((c, ci) => {
+          if (!numericCols.includes(c)){ $tr.append(`<th>${ci === 0 ? 'Grand Total' : ''}</th>`); return; }
+          const agg = colAgg(c) || 'sum';
+          const val = Utils.aggregateNumeric(matched, c, agg);
           const fmt = colFmt(c) || 'number';
-          $tr.append(`<th>${AGG_LABEL[agg]}: ${Utils.formatValue(val, fmt)}</th>`);
-        } else {
-          $tr.append('<th></th>');
-        }
-      });
-    }
+          $tr.append(`<th>${ci === 0 ? 'Grand Total: ' : ''}${Utils.formatValue(val, fmt)}</th>`);
+        });
+      }
+    });
+    App.tableInstances[id] = dt;
+    // A <tfoot> must exist before init for DataTables to call footerCallback — add it now and
+    // trigger one draw so the Grand Total row appears immediately, not just after the first
+    // search/page/sort event.
+    if (!$('#dt-' + id + ' tfoot').length) $(`<tfoot><tr>${cfg.columns.map(() => '<th></th>').join('')}</tr></tfoot>`).appendTo($('#dt-' + id));
+    dt.draw(false);
 
     const body = container;
-    body.querySelector('[data-act="csv"]').onclick = () => TableMgr.exportCsv(cfg, filtered);
-    body.querySelector('[data-act="excel"]').onclick = () => TableMgr.exportExcel(cfg, filtered);
-    body.querySelector('[data-act="copy"]').onclick = () => TableMgr.copyTable(cfg, filtered);
+    body.querySelector('[data-act="csv"]').onclick = () => TableMgr.exportCsv(cfg, visRows);
+    body.querySelector('[data-act="excel"]').onclick = () => TableMgr.exportExcel(cfg, visRows);
+    body.querySelector('[data-act="copy"]').onclick = () => TableMgr.copyTable(cfg, visRows);
     body.querySelector('[data-act="print"]').onclick = () => { window.print(); };
 
     const headRow = container.querySelector('#dt-' + id + ' thead tr');
@@ -3024,7 +3044,22 @@ const TableMgr = {
     const text = aoa.map(r => r.join('\t')).join('\n');
     navigator.clipboard.writeText(text).then(() => Utils.toast('Table copied to clipboard'));
   },
-  refreshAll(){ App.tables.forEach(t => TableMgr.renderTable(t.id)); }
+  // Deferred one animation frame, staggered a few tables at a time, so DataTables' relatively
+  // expensive per-table init (it indexes the full row set up front even with deferRender) never
+  // blocks the KPIs/charts that render synchronously alongside it — this is what makes a saved
+  // dashboard's tables load right along with everything else instead of visibly lagging behind on
+  // open, without changing a single table's data, calculations, or on-screen output.
+  refreshAll(){
+    const ids = App.tables.map(t => t.id);
+    if (!ids.length) return;
+    let i = 0;
+    const step = () => {
+      const end = Math.min(i + 3, ids.length);
+      for (; i < end; i++) TableMgr.renderTable(ids[i]);
+      if (i < ids.length) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
 };
 
 const ChartMgr = {
@@ -3262,8 +3297,13 @@ const ChartMgr = {
       const data = subset.map(r => {
         const x = Utils.toNum(r[xCol]), y = Utils.toNum(r[yCol]);
         if (x === null || y === null) return null;
+        if (y === 0) return null; // a zero-value point is the XY-family equivalent of a zero category
         const pt = { x, y, _rawX: r[xCol] };
-        if (needsSize && sizeCol){ const rv = Utils.toNum(r[sizeCol]); pt.r = rv === null ? 6 : Math.max(3, Math.min(30, rv)); }
+        if (needsSize && sizeCol){
+          const rv = Utils.toNum(r[sizeCol]);
+          if (rv === 0) return null; // a zero-size bubble is invisible anyway — same rule, same intent
+          pt.r = rv === null ? 6 : Math.max(3, Math.min(30, rv));
+        }
         return pt;
       }).filter(Boolean);
       return { name: g === null ? yCol : String(g), data };
@@ -3279,6 +3319,27 @@ const ChartMgr = {
     return val;
   },
   chartJsTypeFor(type){ return (ChartMgr.META[type] || ChartMgr.META.bar).jsType; },
+  // Hides a category whose aggregated value is exactly 0 across every series (a category with SOME
+  // nonzero underlying row still shows normally — this operates on the already-aggregated per-
+  // category totals, not on individual rows). Applied once, right after aggregation, so every chart
+  // family that flows through renderCategorical() — bar, line/area variants, pie/radar, combo,
+  // mixed-axis, range, histogram, pareto, waterfall — gets identical behaviour with no duplicated logic.
+  dropZeroCategories(labels, series, isNonZero){
+    const test = isNonZero || (li => series.some(s => {
+      const v = ChartMgr.pointValue(s.data[li]);
+      return typeof v === 'number' && isFinite(v) && v !== 0;
+    }));
+    const keepIdx = [];
+    labels.forEach((_, li) => { if (test(li)) keepIdx.push(li); });
+    if (keepIdx.length === labels.length) return { labels, series }; // nothing to drop — no-op, zero cost
+    const newLabels = keepIdx.map(i => labels[i]);
+    const newSeries = series.map(s => {
+      const out = { ...s, data: keepIdx.map(i => s.data[i]) };
+      if (s.deltas) out.deltas = keepIdx.map(i => s.deltas[i]);
+      return out;
+    });
+    return { labels: newLabels, series: newSeries };
+  },
   // Options shared by every chart family (legend/tooltip/animation/title) — family-specific render
   // methods pass their own `scales`/`plugins`/`indexAxis` overrides in via `extra`.
   baseOptions(cfg, extra){
@@ -3336,6 +3397,15 @@ const ChartMgr = {
     // through to the original Group-By-driven aggregate() call so it renders exactly as before.
     else if (isMixedAxis && cfg.mixedSeries && cfg.mixedSeries.length) ({ labels, series } = ChartMgr.aggregateMultiSeries(filtered, cfg.x, cfg.mixedSeries, cfg.xOrder, cfg.dateAgg));
     else ({ labels, series } = ChartMgr.aggregate(filtered, cfg.x, cfg.y, cfg.group, cfg.agg, cfg.xOrder, cfg.dateAgg));
+
+    // Hide categories whose overall aggregated value is 0 (any nonzero underlying row keeps the
+    // category visible — see dropZeroCategories). Waterfall/Pareto need a family-specific value
+    // getter: a waterfall bar's "value" is its delta (not the [start,end] pair), and Pareto's
+    // second series is a cumulative % that's nonzero even for a zero-value category, so only its
+    // first (actual value) series should decide visibility.
+    if (isWaterfall) ({ labels, series } = ChartMgr.dropZeroCategories(labels, series, li => (series[0].deltas ? series[0].deltas[li] : series[0].data[li]) !== 0));
+    else if (isPareto) ({ labels, series } = ChartMgr.dropZeroCategories(labels, series, li => series[0].data[li] !== 0));
+    else ({ labels, series } = ChartMgr.dropZeroCategories(labels, series));
 
     const isLineFamily = meta.jsType === 'line';
     const isAreaFill = !!meta.fill;
