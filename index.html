@@ -419,6 +419,13 @@ body.link-invalid-active #app-shell{display:none;}
 .filter-chip-group{display:flex; flex-wrap:wrap; gap:.3rem; max-height:110px; overflow-y:auto; padding:.35rem; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--mist);}
 .filter-chip{font-size:.74rem; padding:.15rem .5rem; border-radius:999px; background:var(--card); border:1px solid var(--border); cursor:pointer; user-select:none;}
 .filter-chip.active{background:var(--signal); color:#04201F; border-color:var(--signal); font-weight:700;}
+/* Combined Month Selection only — always exactly 12 short (3-letter) labels, so unlike the
+   generic .filter-chip-group (table column picker, chart X-order, other multiselects, which can
+   hold many/long values and need to wrap+scroll vertically) this fits in one compact row with
+   no scrollbar. Scoped to this modifier so nothing else's chip layout changes. */
+.filter-chip-group--months{flex-wrap:nowrap; max-height:none; overflow-x:auto; overflow-y:hidden; gap:.25rem; padding:.15rem; scrollbar-width:none;}
+.filter-chip-group--months::-webkit-scrollbar{display:none;}
+.filter-chip-group--months .filter-chip{flex:0 0 auto; padding:.1rem .4rem; font-size:.7rem; line-height:1.4;}
 
 #cross-filter-indicator{display:flex; align-items:center; gap:.4rem; font-size:.75rem; font-weight:700;
   background:color-mix(in srgb, var(--signal) 16%, transparent); color:var(--signal-deep);
@@ -588,6 +595,7 @@ html{scroll-behavior:smooth;}
   .filter-ctrl{width:100%; min-width:0;}
   .filter-ctrl .form-select, .filter-ctrl .form-control{min-height:42px; font-size:.9rem;}
   .filter-chip{padding:.35rem .75rem; font-size:.8rem;}
+  .filter-chip-group--months .filter-chip{padding:.1rem .4rem; font-size:.7rem;}
   #cross-filter-indicator{width:100%; justify-content:space-between; margin-right:0;}
 
   /* Charts — never overflow, always fit the viewport */
@@ -1536,12 +1544,16 @@ const Utils = {
   },
   // Financial year (Apr–Mar) helpers — derived on the fly from the same date column every
   // other date-based filter already reads. No new stored fields; FY start year, label
-  // ("2026-27"), and FY-order month position (Apr=1 ... Mar=12) are all computed from the
-  // calendar month/year of the existing Date value.
+  // ("2026-2027"), and FY-order month position (Apr=1 ... Mar=12) are all computed from the
+  // calendar month/year of the existing Date value. Mirrors the Excel reference formula:
+  // IF(ISBLANK(d),"",IF(MONTH(d)>=4, YEAR(d)&"-"&YEAR(d)+1, YEAR(d)-1&"-"&YEAR(d))).
   FY_MONTH_ORDER: [4,5,6,7,8,9,10,11,12,1,2,3],
   FY_MONTH_ABBR: {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'},
   fyStartYear(d){ const m = d.getMonth()+1, y = d.getFullYear(); return m >= 4 ? y : y - 1; },
-  fyLabel(startYear){ return `${startYear}-${String((startYear+1) % 100).padStart(2,'0')}`; },
+  // Full YYYY-YYYY format (e.g. "2024-2025"), matching the Excel reference formula's output
+  // exactly — not the "2024-25" short form. Guards against blank/invalid startYear so callers
+  // never render NaN/undefined.
+  fyLabel(startYear){ return (startYear === null || startYear === undefined || isNaN(startYear)) ? '' : `${startYear}-${startYear + 1}`; },
   fyQuarter(calMonth){ return calMonth >= 4 && calMonth <= 6 ? 1 : calMonth >= 7 && calMonth <= 9 ? 2 : calMonth >= 10 && calMonth <= 12 ? 3 : 4; },
   // Single source of truth for every per-series aggregation dropdown (chart Bar/Line aggregation,
   // Mixed Multi-Axis series 1-4). Populated into the <select> elements by UI.populateAggSelectors()
@@ -2769,7 +2781,7 @@ const FilterMgr = {
         break;
       }
       case 'monthcombo': {
-        const box = document.createElement('div'); box.className = 'filter-chip-group';
+        const box = document.createElement('div'); box.className = 'filter-chip-group filter-chip-group--months';
         box.innerHTML = monthValues.map(i => `<span class="filter-chip" data-v="${i}">${Utils.FY_MONTH_ABBR[i]}</span>`).join('');
         box.querySelectorAll('.filter-chip').forEach(chip => {
           const arr = App.filterValues[f.id] || [];
