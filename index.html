@@ -1731,17 +1731,26 @@ const DataMgr = {
     const parsed = DataMgr.parseGSheetUrl(input);
     return parsed.ok ? parsed.id : null;
   },
+  // Google's own CDN caches these gviz/export endpoints server-side, keyed on the exact URL —
+  // independent of the browser. fetch(..., {cache:'no-store'}) only stops the *browser* from
+  // reusing a stale response; it does nothing about Google's edge cache, which can keep serving
+  // a snapshot from a few minutes ago even though the sheet itself has already changed. Appending
+  // a unique token on every call makes each request a new URL to that cache, so it can't be
+  // matched to a stale entry and Google is forced to re-read the live sheet.
+  cacheBustParam(){
+    return `_cb=${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  },
   gvizCsvUrl(sheetId, gid, kind){
-    if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv` + (gid ? `&gid=${gid}` : '');
-    return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv` + (gid !== undefined && gid !== null && gid !== '' ? `&gid=${gid}` : '');
+    if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv` + (gid ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
+    return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv` + (gid !== undefined && gid !== null && gid !== '' ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
   },
   exportCsvUrl(sheetId, gid, kind){
-    if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv` + (gid ? `&gid=${gid}` : '');
-    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv` + (gid !== undefined && gid !== null && gid !== '' ? `&gid=${gid}` : '');
+    if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv` + (gid ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
+    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv` + (gid !== undefined && gid !== null && gid !== '' ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
   },
   exportXlsxUrl(sheetId, kind){
-    if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=xlsx`;
-    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`;
+    if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=xlsx` + `&${DataMgr.cacheBustParam()}`;
+    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx` + `&${DataMgr.cacheBustParam()}`;
   },
   // Maps a raw fetch failure (HTTP status or thrown error) to one plain-English message. Every
   // Google Sheets error path in this file routes through here so a raw exception is never shown.
