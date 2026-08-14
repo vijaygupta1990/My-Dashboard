@@ -1436,9 +1436,30 @@ const Utils = {
     const n = parseFloat(cleaned);
     return isNaN(n) ? null : n;
   },
+  MONTH_NAME_INDEX: {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11},
+  // Handles "01-Jan-25", "01-Jan-2025", "1 Jan 2025", "01/Jan/2025" — the exact text format
+  // Google Sheets' CSV/gviz export produces for a date-formatted column. SheetJS's CSV reader
+  // leaves this format as a plain string (verified — it does not auto-convert it), so it used to
+  // fall through to `new Date(v)`. That format is NOT ISO 8601, so per spec its parsing is
+  // implementation-defined: different browsers/engines can legally interpret it differently,
+  // which is why a date could parse correctly in testing but wrong for some users ("Jan showing
+  // as Dec"). Parsing the day/month-name/year ourselves and building the Date from numeric
+  // components removes that ambiguity entirely — same result on every browser, every time.
+  parseDayMonthNameYear(v){
+    const m = /^(\d{1,2})[-\/\s]([A-Za-z]{3,9})[-\/\s](\d{2,4})$/.exec(String(v).trim());
+    if (!m) return null;
+    const day = parseInt(m[1], 10);
+    const mi = Utils.MONTH_NAME_INDEX[m[2].slice(0,3).toLowerCase()];
+    if (mi === undefined || day < 1 || day > 31) return null;
+    let year = parseInt(m[3], 10);
+    if (m[3].length === 2) year += (year <= 69 ? 2000 : 1900); // matches new Date()'s own 2-digit-year rule
+    const d = new Date(year, mi, day);
+    return isNaN(d.getTime()) ? null : d;
+  },
   toDate(v){
     if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
     if (typeof v === 'number') { const d = new Date(Math.round((v - 25569) * 86400 * 1000)); return isNaN(d.getTime()) ? null : d; }
+    if (typeof v === 'string'){ const explicit = Utils.parseDayMonthNameYear(v); if (explicit) return explicit; }
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d;
   },
