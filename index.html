@@ -1554,6 +1554,13 @@ const Utils = {
   // exactly — not the "2024-25" short form. Guards against blank/invalid startYear so callers
   // never render NaN/undefined.
   fyLabel(startYear){ return (startYear === null || startYear === undefined || isNaN(startYear)) ? '' : `${startYear}-${startYear + 1}`; },
+  // Single centralized entry point for "what FY does this date belong to" — every FY filter,
+  // table column, KPI, chart grouping, and export should call THIS (not fyStartYear/fyLabel
+  // separately) so there is exactly one place that can ever disagree with the Excel formula.
+  // Works for any date column (OrderDate, InvoiceDate, DeliveryDate, ...) since it only ever
+  // takes a Date value, never a column name. Returns "" for blank/invalid input, matching the
+  // Excel reference: IF(ISBLANK(d),"",IF(MONTH(d)>=4, YEAR(d)&"-"&YEAR(d)+1, YEAR(d)-1&"-"&YEAR(d))).
+  getFinancialYear(d){ return (d instanceof Date && !isNaN(d.getTime())) ? Utils.fyLabel(Utils.fyStartYear(d)) : ''; },
   fyQuarter(calMonth){ return calMonth >= 4 && calMonth <= 6 ? 1 : calMonth >= 7 && calMonth <= 9 ? 2 : calMonth >= 10 && calMonth <= 12 ? 3 : 4; },
   // Single source of truth for every per-series aggregation dropdown (chart Bar/Line aggregation,
   // Mixed Multi-Axis series 1-4). Populated into the <select> elements by UI.populateAggSelectors()
@@ -1585,6 +1592,22 @@ const Utils = {
   },
   // Sort key so labels order chronologically instead of alphabetically (e.g. Jan..Dec, not
   // Apr, Aug, Dec, Feb...). Month/Combined-Month/Quarter all use financial-year order (Apr..Mar) per spec.
+  // Single centralized entry point for "which months belong to this FY, given these rows".
+  // A calendar month alone doesn't identify its FY (Dec can be FY 2025-2026 while Jan is
+  // FY 2024-2025), so this always re-checks each row's own getFinancialYear() against
+  // selectedFY rather than trusting month number alone. selectedFY === '' means "no FY
+  // constraint" (used when no dependent FY filter is active), returning every month present.
+  // Takes plain rows + a column, so it works for any date column and any dataset.
+  getMonthOptionsForFY(rows, col, selectedFY){
+    const set = new Set();
+    rows.forEach(r => {
+      const d = Utils.toDate(r[col]);
+      if (!d) return;
+      if (selectedFY && Utils.getFinancialYear(d) !== selectedFY) return;
+      set.add(d.getMonth() + 1);
+    });
+    return Array.from(set).sort((a,b) => Utils.FY_MONTH_ORDER.indexOf(a) - Utils.FY_MONTH_ORDER.indexOf(b));
+  },
   dateAggSortKey(d, mode){
     const mo = d.getMonth(), yr = d.getFullYear();
     switch(mode){
@@ -2141,10 +2164,14 @@ const DataMgr = {
   },
   distinctMonthsFiltered(col, excludeId){
     const rows = DataMgr.getFilteredExcluding(excludeId);
-    const set = new Set();
-    rows.forEach(r => { const d = Utils.toDate(r[col]); if (d) set.add(d.getMonth()+1); });
-    // Financial-year order (Apr..Mar), not calendar/alphabetical order.
-    return Array.from(set).sort((a,b)=> Utils.FY_MONTH_ORDER.indexOf(a) - Utils.FY_MONTH_ORDER.indexOf(b));
+    // Dependent-filter fix: if a Financial Year filter on this SAME date column is active,
+    // restrict months to the ones that actually belong to that FY (not just whatever months
+    // happen to survive the generic filter chain) — e.g. Dec must never appear for FY
+    // 2024-2025 just because a Dec row exists somewhere else in FY 2025-2026. Matched by
+    // column + type only, so this works for any date column and any FY filter's name.
+    const fyFilter = App.filters.find(f => f.type === 'year' && f.column === col && DataMgr.isFilterActive(f));
+    const selectedFY = fyFilter ? String(App.filterValues[fyFilter.id]) : '';
+    return Utils.getMonthOptionsForFY(rows, col, selectedFY);
   },
   // "Year" here means Financial Year (Apr–Mar) per Chapter 2 — returns the FY start years
   // present in the data (e.g. 2026 for FY 2026-27), computed from the same date column.
@@ -2170,7 +2197,7 @@ const DataMgr = {
         };
       }
       case 'month': return row => { const d = Utils.toDate(row[col]); return d && (d.getMonth()+1) === parseInt(v); };
-      case 'year': return row => { const d = Utils.toDate(row[col]); return d && Utils.fyLabel(Utils.fyStartYear(d)) === String(v); };
+      case 'year': return row => { const d = Utils.toDate(row[col]); return d && Utils.getFinancialYear(d) === String(v); };
       case 'asondate': return row => { const d = Utils.toDate(row[col]); return d && d.toISOString().slice(0,10) === v; };
       case 'monthcombo': { const set = new Set((v||[]).map(String)); return row => { const d = Utils.toDate(row[col]); return d && set.has(String(d.getMonth()+1)); }; }
       case 'numberrange': {
