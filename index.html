@@ -5800,7 +5800,16 @@ const UI = {
       Utils.toast(`Text box "${title}" added — click into it on the canvas to type`);
     });
   },
-  refreshAll(){ KpiMgr.renderCards(); TableMgr.refreshAll(); ChartMgr.refreshAll(); UI.updateStatusBar(); },
+  // Every Google Sheet refresh path (manual Refresh, the auto-refresh timer, initial connect,
+  // cache-hit load, and the multi-tab join in applyRelationships) funnels through here. It must
+  // rebuild the filter bar too -- not just KPIs/tables/charts -- otherwise FilterMgr.renderBar()
+  // (which rebuilds each filter's dropdown/chip options from the freshly-fetched data AND clears
+  // any selected filter value that no longer exists in that data, see buildControl()) never runs
+  // after a refresh. Without it, a filter left pointing at a stale value keeps silently excluding
+  // every new/changed row from DataMgr.getFiltered() -- which is what KPIs, tables, charts, and
+  // calculated fields all read from -- so the whole dashboard *looks* frozen on old data even
+  // though App.data itself was already correctly replaced with the latest Sheet rows.
+  refreshAll(){ FilterMgr.renderBar(); KpiMgr.renderCards(); TableMgr.refreshAll(); ChartMgr.refreshAll(); UI.updateStatusBar(); },
   updateStatusBar(){
     const filtered = DataMgr.getFiltered();
     document.getElementById('sb-records').textContent = filtered.length.toLocaleString() + (filtered.length !== App.data.length ? ' / ' + App.data.length.toLocaleString() : '');
