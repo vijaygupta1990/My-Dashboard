@@ -1827,6 +1827,10 @@ const DataMgr = {
       try {
         const res = await fetch(DataMgr.exportXlsxUrl(sheetId, kind), { cache: 'no-store' });
         if (res.ok){
+          // [DIAG] If Google is serving a cached snapshot despite the cache-busting query param,
+          // response headers are the most direct evidence — look for Age > 0, an x-cache HIT, or
+          // a Last-Modified/Date that doesn't match "just now".
+          console.info('[GSheet refresh] response headers — date:', res.headers.get('date'), 'age:', res.headers.get('age'), 'cache-control:', res.headers.get('cache-control'), 'last-modified:', res.headers.get('last-modified'), 'x-cache:', res.headers.get('x-cache'));
           const buf = await res.arrayBuffer();
           const head = new TextDecoder('utf-8').decode(buf.slice(0, 300)).trim();
           const looksLikeHtml = /^<!DOCTYPE html/i.test(head) || /^<html/i.test(head);
@@ -1840,6 +1844,14 @@ const DataMgr = {
                 const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: '' });
                 return `${n}: ${rows.length} rows`;
               }));
+              // [DIAG] Sample the FIRST row of every tab so you can eyeball it against the actual
+              // Google Sheet — if this value doesn't match what's currently in the sheet, Google's
+              // export endpoint is the one serving stale data, not this app.
+              wb.SheetNames.forEach(n => {
+                const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: '' });
+                console.info(`[GSheet refresh] "${n}" first row sample:`, rows[0]);
+                console.info(`[GSheet refresh] "${n}" last row sample:`, rows[rows.length - 1]);
+              });
               wired(wb, opts); return true;
             }
             throw new Error('empty: workbook had no sheets');
