@@ -1460,10 +1460,56 @@ const Utils = {
     const d = new Date(year, mi, day);
     return isNaN(d.getTime()) ? null : d;
   },
+  // Handles the unambiguous ISO "YYYY-MM-DD" form (what a Google Sheet often exports for a
+  // date-formatted cell via the CSV/gviz path). A date-only ISO string is UTC per the ECMA-262
+  // spec, so `new Date("2026-01-01")` is midnight UTC — reading it back with the local getMonth/
+  // getDate() this app uses everywhere rolls the date back a day (and a month, at a month
+  // boundary) for any viewer/server in a timezone west of UTC. Building the Date from the numeric
+  // Y/M/D components directly, like parseDayMonthNameYear above, sidesteps that entirely.
+  parseIsoDate(v){
+    const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(v).trim());
+    if (!m) return null;
+    const year = parseInt(m[1], 10), mi = parseInt(m[2], 10) - 1, day = parseInt(m[3], 10);
+    if (mi < 0 || mi > 11 || day < 1 || day > 31) return null;
+    const d = new Date(year, mi, day);
+    return isNaN(d.getTime()) ? null : d;
+  },
+  // SINGLE normalization point for every date value this dashboard reads — Month, Month by Order,
+  // Financial Year, Combined Month Selection, filters, KPIs, tables, and charts all derive from
+  // whatever Date object THIS function returns, so it's the one place a raw value can ever
+  // disagree with the calendar day it actually represents.
+  //
+  // Root cause of "1 January showing/grouping as December": this app's primary refresh path
+  // downloads the full workbook as xlsx and parses it via `XLSX.read(buf, {cellDates:true})`.
+  // SheetJS constructs date-typed cells as UTC midnight (`new Date(Date.UTC(y,m,d))`) — a
+  // well-documented SheetJS behavior, NOT a bug in this app — while every date field in this
+  // dashboard reads the *local* getMonth()/getDate()/getFullYear(). For any viewer or server in a
+  // timezone west of UTC, local midnight is earlier than UTC midnight, so a UTC-midnight
+  // "01-Jan-2026" reads back locally as "31-Dec-2025" — exactly the reported symptom, and it would
+  // apply to EVERY 1st-of-month date, not just January (a FY-boundary date like 01-Apr would roll
+  // back into the previous FY the same way). Detected via getUTCHours()===0/getUTCMinutes()===0:
+  // a genuine UTC-midnight artifact always has zero UTC time-of-day; a Date already built from
+  // local components (e.g. parseDayMonthNameYear/parseIsoDate below) generally won't, so this
+  // never re-shifts an already-correct local date.
   toDate(v){
-    if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
-    if (typeof v === 'number') { const d = new Date(Math.round((v - 25569) * 86400 * 1000)); return isNaN(d.getTime()) ? null : d; }
-    if (typeof v === 'string'){ const explicit = Utils.parseDayMonthNameYear(v); if (explicit) return explicit; }
+    if (v instanceof Date){
+      if (isNaN(v.getTime())) return null;
+      if (v.getUTCHours() === 0 && v.getUTCMinutes() === 0 && v.getUTCSeconds() === 0){
+        return new Date(v.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate());
+      }
+      return v;
+    }
+    if (typeof v === 'number') {
+      // Excel/Sheets serial date number → calendar date. The epoch-ms arithmetic below is
+      // inherently UTC (serial numbers are timezone-agnostic day counts), so the result is always
+      // re-based onto local Y/M/D components for the same reason as the SheetJS Date case above.
+      const utc = new Date(Math.round((v - 25569) * 86400 * 1000));
+      return isNaN(utc.getTime()) ? null : new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+    }
+    if (typeof v === 'string'){
+      const explicit = Utils.parseDayMonthNameYear(v); if (explicit) return explicit;
+      const iso = Utils.parseIsoDate(v); if (iso) return iso;
+    }
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d;
   },
