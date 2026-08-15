@@ -84,6 +84,10 @@
 })();
 </script>
 
+<!-- Empty inline favicon — this is a single self-contained HTML file with no separate icon asset,
+     so this stops the browser from requesting /favicon.ico (which 404s) on every load. -->
+<link rel="icon" href="data:,">
+
 <!-- Bootstrap 5 -->
 <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
 <!-- Font Awesome -->
@@ -1819,41 +1823,16 @@ const DataMgr = {
     // few times with backoff before giving up and dropping to the single-tab CSV fallback below.
     const XLSX_RETRY_ATTEMPTS = 3;
     const XLSX_RETRY_DELAY_MS = 700;
-    // [DIAG] Temporary runtime tracing — safe to delete once the stale-tab issue is confirmed
-    // fixed. Logs which path actually ran and what it detected, since the user-facing toast
-    // doesn't distinguish "full workbook" refresh from the per-tab CSV fallback.
-    console.info('[GSheet refresh] starting — forceRefresh:', !!opts.forceRefresh, 'kind:', kind, 'sheetId:', sheetId);
     for (let attempt = 1; attempt <= XLSX_RETRY_ATTEMPTS; attempt++){
       try {
         const res = await fetch(DataMgr.exportXlsxUrl(sheetId, kind), { cache: 'no-store' });
         if (res.ok){
-          // [DIAG] If Google is serving a cached snapshot despite the cache-busting query param,
-          // response headers are the most direct evidence — look for Age > 0, an x-cache HIT, or
-          // a Last-Modified/Date that doesn't match "just now".
-          console.info('[GSheet refresh] response headers — date:', res.headers.get('date'), 'age:', res.headers.get('age'), 'cache-control:', res.headers.get('cache-control'), 'last-modified:', res.headers.get('last-modified'), 'x-cache:', res.headers.get('x-cache'));
           const buf = await res.arrayBuffer();
           const head = new TextDecoder('utf-8').decode(buf.slice(0, 300)).trim();
           const looksLikeHtml = /^<!DOCTYPE html/i.test(head) || /^<html/i.test(head);
           if (!looksLikeHtml && buf.byteLength){
             const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-            if (wb.SheetNames && wb.SheetNames.length){
-              // [DIAG] Row counts per tab as parsed straight out of THIS xlsx download — if these
-              // numbers/values are already stale here, the problem is Google's export endpoint
-              // itself (server-side snapshot), not anything downstream in this app.
-              console.info('[GSheet refresh] xlsx export OK — tabs:', wb.SheetNames, wb.SheetNames.map(n => {
-                const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: '' });
-                return `${n}: ${rows.length} rows`;
-              }));
-              // [DIAG] Sample the FIRST row of every tab so you can eyeball it against the actual
-              // Google Sheet — if this value doesn't match what's currently in the sheet, Google's
-              // export endpoint is the one serving stale data, not this app.
-              wb.SheetNames.forEach(n => {
-                const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: '' });
-                console.info(`[GSheet refresh] "${n}" first row sample:`, rows[0]);
-                console.info(`[GSheet refresh] "${n}" last row sample:`, rows[rows.length - 1]);
-              });
-              wired(wb, opts); return true;
-            }
+            if (wb.SheetNames && wb.SheetNames.length){ wired(wb, opts); return true; }
             throw new Error('empty: workbook had no sheets');
           }
           break; // got a real (non-transient) response that just isn't a workbook — retrying won't change that
@@ -1917,9 +1896,6 @@ const DataMgr = {
       Utils.toast(DataMgr.friendlyGSheetError(new Error('empty: no sheet available'), null), true);
       return false;
     }
-    // [DIAG] Reaching this point means the xlsx full-workbook export above did NOT return a usable
-    // workbook after all retries — this per-tab CSV loop is a fallback, not the normal path.
-    console.info('[GSheet refresh] xlsx export failed/unusable — falling back to per-tab CSV for:', knownNames);
     const refreshedTables = {}; let firstErr = null;
     for (const name of knownNames){
       try {
@@ -1933,8 +1909,7 @@ const DataMgr = {
         const columns = rows.length ? Object.keys(rows[0]) : [];
         const columnTypes = {}; columns.forEach(c => columnTypes[c] = DataMgr.detectTypeFor(rows, c));
         refreshedTables[name] = { name, columns, columnTypes, rows };
-        console.info(`[GSheet refresh] fallback tab "${name}" fetched — ${rows.length} rows`);
-      } catch (err){ if (!firstErr) firstErr = err; console.warn(`[GSheet refresh] fallback tab "${name}" failed:`, err.message); }
+      } catch (err){ if (!firstErr) firstErr = err; }
     }
     const refreshedCount = Object.keys(refreshedTables).length;
     if (!refreshedCount){
@@ -2100,13 +2075,7 @@ const DataMgr = {
   applyRelationships(opts){
     opts = opts || {};
     if (!App.dataSource.gsheetName){ if (!opts.silent) Utils.toast('Pick a primary sheet first', true); return false; }
-    // [DIAG] Snapshot of what's actually sitting in App.sheetTables right before the join runs —
-    // if a tab's row count/data here already looks stale, the fetch itself never updated it and
-    // the problem is upstream (Google's export cache or the fetch path), not the join engine.
-    console.info('[GSheet refresh] pre-join sheetTables:', Object.keys(App.sheetTables).map(n => `${n}: ${App.sheetTables[n].rows.length} rows`));
-    console.info('[GSheet refresh] relationships in use:', App.relationships.map(r => `${r.base} -> ${r.other} on ${r.baseKeys}`));
     const { rows, errors, warnings } = JoinEngine.run(App.dataSource.gsheetName, App.relationships);
-    console.info('[GSheet refresh] post-join row count:', rows.length, errors.length ? { errors } : '');
     const box = document.getElementById('rel-validation');
     if (box){
       box.innerHTML = errors.map(e => `<div class="text-danger">${Utils.esc(e)}</div>`).join('')
