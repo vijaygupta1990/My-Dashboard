@@ -1050,10 +1050,9 @@ service cloud.firestore {
           <select class="form-select form-select-sm mb-2" id="filter-type">
             <option value="dropdown">Dropdown</option><option value="multiselect">Multi Select</option>
             <option value="search">Search Box</option><option value="checkbox">Checkbox</option>
-            <option value="radio">Radio Button</option><option value="daterange">Date Range</option>
-            <option value="asondate">As-On-Date</option>
-            <option value="month">Month (FY Order)</option><option value="monthcombo">Combined Month Selection</option>
-            <option value="year">Financial Year</option><option value="numberrange">Number Range</option>
+            <option value="radio">Radio Button</option>
+            <option value="month">Month</option><option value="monthcombo">Combined Month Selection</option>
+            <option value="year">Year</option><option value="fy">Financial Year</option><option value="numberrange">Number Range</option>
           </select>
           <button class="tb-btn primary w-100" type="submit"><i class="fa-solid fa-plus"></i> Add Filter</button>
         </form>
@@ -1513,6 +1512,25 @@ const Utils = {
     const d = new Date(v);
     return isNaN(d.getTime()) ? null : d;
   },
+  // Stable local-calendar key for a Date (YYYY-MM-DD), used anywhere a date value needs to be
+  // matched/grouped as a string (dropdown & multiselect filter options, distinct-value lists).
+  // Deliberately NOT toISOString(): that converts to UTC, which rolls a local midnight Date back
+  // a day (and, at a month boundary, a whole month) for any timezone east of UTC — the exact
+  // "01-Jan shows as 31-Dec" symptom this rebuild removes. Reads only the local Y/M/D already
+  // fixed by Utils.toDate(), so it never re-introduces that shift.
+  dateKey(d){
+    if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  },
+  // Drops filters saved by the old date-aggregation system that no longer exist (Date Range,
+  // As-On-Date) when loading a previously-saved dashboard or share link, so no dead filter type
+  // silently lingers in App.filters. A saved 'year' filter is a Financial Year filter under the
+  // old system; the new "Year" option means calendar year, so a saved dashboard that relied on
+  // the old Financial Year behaviour should be recreated using the new "Financial Year" option.
+  dropRemovedFilterTypes(filters){
+    return (filters || []).filter(f => f.type !== 'daterange' && f.type !== 'asondate');
+  },
   // `short` is opt-in (default false) so every existing caller — tables, charts, comparison
   // labels, axis ticks — keeps rendering exactly as before. Only KpiMgr.renderCards() passes
   // App.kpiNumberFormat === 'short' to abbreviate KPI card numbers (₹34.53L / ₹8.4K instead of
@@ -1613,13 +1631,15 @@ const Utils = {
   debounce(fn, wait){
     let t; return function(...args){ clearTimeout(t); t = setTimeout(()=>fn.apply(this,args), wait); };
   },
-  // Financial year (Apr–Mar) helpers — derived on the fly from the same date column every
-  // other date-based filter already reads. No new stored fields; FY start year, label
-  // ("2026-2027"), and FY-order month position (Apr=1 ... Mar=12) are all computed from the
-  // calendar month/year of the existing Date value. Mirrors the Excel reference formula:
+  // Financial year (Apr–Mar) helpers — derived on the fly from the same normalized date every
+  // other date-based filter already reads (Utils.toDate). No new stored fields; FY start year and
+  // label ("2026-2027") are computed from the calendar month/year of the existing Date value.
+  // Mirrors the Excel reference formula:
   // IF(ISBLANK(d),"",IF(MONTH(d)>=4, YEAR(d)&"-"&YEAR(d)+1, YEAR(d)-1&"-"&YEAR(d))).
-  FY_MONTH_ORDER: [4,5,6,7,8,9,10,11,12,1,2,3],
-  FY_MONTH_ABBR: {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'},
+  // Calendar month abbreviations, keyed 1 (Jan) .. 12 (Dec) — plain calendar order, used by the
+  // Month and Combined Month filter controls. Not FY-ordered; nothing in this app orders months
+  // by financial year any more (see Utils.getMonthOptionsForFY).
+  MONTH_ABBR: {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'},
   fyStartYear(d){ const m = d.getMonth()+1, y = d.getFullYear(); return m >= 4 ? y : y - 1; },
   // Full YYYY-YYYY format (e.g. "2024-2025"), matching the Excel reference formula's output
   // exactly — not the "2024-25" short form. Guards against blank/invalid startYear so callers
@@ -1644,8 +1664,6 @@ const Utils = {
   // month/quarter labels are deliberately year-less (e.g. "Apr", "Q1") so rows from every year
   // roll up into the same bucket, matching how "Month" and "Quarter" are meant to summarise.
   DATE_AGG_MONTHS: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
-  // Apr=0 ... Mar=11 — financial-year position for a given Date.getMonth() (0=Jan...11=Dec).
-  fyMonthIndex(mo){ return (mo + 9) % 12; },
   dateAggLabel(d, mode){
     if (!d) return '';
     const mo = d.getMonth(), yr = d.getFullYear();
@@ -1662,13 +1680,14 @@ const Utils = {
     }
   },
   // Sort key so labels order chronologically instead of alphabetically (e.g. Jan..Dec, not
-  // Apr, Aug, Dec, Feb...). Month/Combined-Month/Quarter all use financial-year order (Apr..Mar) per spec.
-  // Single centralized entry point for "which months belong to this FY, given these rows".
-  // A calendar month alone doesn't identify its FY (Dec can be FY 2025-2026 while Jan is
-  // FY 2024-2025), so this always re-checks each row's own getFinancialYear() against
-  // selectedFY rather than trusting month number alone. selectedFY === '' means "no FY
-  // constraint" (used when no dependent FY filter is active), returning every month present.
-  // Takes plain rows + a column, so it works for any date column and any dataset.
+  // Apr, Aug, Dec, Feb...). Month/Combined-Month use plain calendar order (Jan..Dec) — nothing
+  // reorders months by financial year any more.
+  // Single centralized entry point for "which months are present, given these rows" — optionally
+  // narrowed to one Financial Year. A calendar month alone doesn't identify its FY (Dec can be FY
+  // 2025-2026 while Jan is FY 2024-2025), so this re-checks each row's own getFinancialYear()
+  // against selectedFY rather than trusting month number alone. selectedFY === '' means "no FY
+  // constraint" (used when no dependent Financial Year filter is active), returning every month
+  // present. Takes plain rows + a column, so it works for any date column and any dataset.
   getMonthOptionsForFY(rows, col, selectedFY){
     const set = new Set();
     rows.forEach(r => {
@@ -1677,13 +1696,13 @@ const Utils = {
       if (selectedFY && Utils.getFinancialYear(d) !== selectedFY) return;
       set.add(d.getMonth() + 1);
     });
-    return Array.from(set).sort((a,b) => Utils.FY_MONTH_ORDER.indexOf(a) - Utils.FY_MONTH_ORDER.indexOf(b));
+    return Array.from(set).sort((a,b) => a - b); // calendar order: Jan(1)..Dec(12)
   },
   dateAggSortKey(d, mode){
     const mo = d.getMonth(), yr = d.getFullYear();
     switch(mode){
       case 'day': return d.getTime();
-      case 'month': case 'monthcombo': return Utils.fyMonthIndex(mo);
+      case 'month': case 'monthcombo': return mo; // calendar order: Jan(0)..Dec(11)
       case 'quarter': return Utils.fyQuarter(mo + 1);
       case 'year': return yr;
       case 'monthyear': return yr*12+mo;
@@ -2206,7 +2225,7 @@ const DataMgr = {
     const set = new Set();
     for (let i=0;i<App.data.length;i++){
       const v = App.data[i][col];
-      if (v !== null && v !== undefined && v !== '') set.add(v instanceof Date ? v.toISOString().slice(0,10) : v);
+      if (v !== null && v !== undefined && v !== '') set.add(v instanceof Date ? Utils.dateKey(v) : v);
     }
     return Array.from(set).sort((a,b)=> (a>b?1:a<b?-1:0));
   },
@@ -2267,7 +2286,7 @@ const DataMgr = {
     const set = new Set();
     for (let i=0;i<rows.length;i++){
       const v = rows[i][col];
-      if (v !== null && v !== undefined && v !== '') set.add(v instanceof Date ? v.toISOString().slice(0,10) : v);
+      if (v !== null && v !== undefined && v !== '') set.add(v instanceof Date ? Utils.dateKey(v) : v);
     }
     return Array.from(set).sort((a,b)=> (a>b?1:a<b?-1:0));
   },
@@ -2278,12 +2297,21 @@ const DataMgr = {
     // happen to survive the generic filter chain) — e.g. Dec must never appear for FY
     // 2024-2025 just because a Dec row exists somewhere else in FY 2025-2026. Matched by
     // column + type only, so this works for any date column and any FY filter's name.
-    const fyFilter = App.filters.find(f => f.type === 'year' && f.column === col && DataMgr.isFilterActive(f));
+    const fyFilter = App.filters.find(f => f.type === 'fy' && f.column === col && DataMgr.isFilterActive(f));
     const selectedFY = fyFilter ? String(App.filterValues[fyFilter.id]) : '';
     return Utils.getMonthOptionsForFY(rows, col, selectedFY);
   },
-  // "Year" here means Financial Year (Apr–Mar) per Chapter 2 — returns the FY start years
-  // present in the data (e.g. 2026 for FY 2026-27), computed from the same date column.
+  // Actual calendar years present in the data for this date column (e.g. 2025), independent of
+  // financial year.
+  distinctYearsFiltered(col, excludeId){
+    const rows = DataMgr.getFilteredExcluding(excludeId);
+    const set = new Set();
+    rows.forEach(r => { const d = Utils.toDate(r[col]); if (d) set.add(d.getFullYear()); });
+    return Array.from(set).sort((a,b)=>a-b);
+  },
+  // Financial Year (Apr–Mar) — returns the FY start years present in the data (e.g. 2026 for FY
+  // 2026-2027), computed from the same date column. Separate from distinctYearsFiltered (calendar
+  // year) so the two are never mixed.
   distinctFYYearsFiltered(col, excludeId){
     const rows = DataMgr.getFilteredExcluding(excludeId);
     const set = new Set();
@@ -2294,20 +2322,12 @@ const DataMgr = {
     const v = App.filterValues[f.id];
     const col = f.column;
     switch(f.type){
-      case 'dropdown': case 'radio': return row => String(row[col] instanceof Date ? row[col].toISOString().slice(0,10) : row[col]) === String(v);
-      case 'multiselect': case 'checkbox': { const set = new Set(v); return row => set.has(String(row[col] instanceof Date ? row[col].toISOString().slice(0,10) : row[col])); }
+      case 'dropdown': case 'radio': return row => String(row[col] instanceof Date ? Utils.dateKey(row[col]) : row[col]) === String(v);
+      case 'multiselect': case 'checkbox': { const set = new Set(v); return row => set.has(String(row[col] instanceof Date ? Utils.dateKey(row[col]) : row[col])); }
       case 'search': { const needle = String(v).toLowerCase(); return row => String(row[col]).toLowerCase().includes(needle); }
-      case 'daterange': {
-        const start = v.start ? new Date(v.start) : null; const end = v.end ? new Date(v.end) : null;
-        return row => {
-          const d = Utils.toDate(row[col]); if (!d) return false;
-          if (start && d < start) return false; if (end && d > new Date(end.getTime() + 86399999)) return false;
-          return true;
-        };
-      }
       case 'month': return row => { const d = Utils.toDate(row[col]); return d && (d.getMonth()+1) === parseInt(v); };
-      case 'year': return row => { const d = Utils.toDate(row[col]); return d && Utils.getFinancialYear(d) === String(v); };
-      case 'asondate': return row => { const d = Utils.toDate(row[col]); return d && d.toISOString().slice(0,10) === v; };
+      case 'year': return row => { const d = Utils.toDate(row[col]); return d && d.getFullYear() === parseInt(v); };
+      case 'fy': return row => { const d = Utils.toDate(row[col]); return d && Utils.getFinancialYear(d) === String(v); };
       case 'monthcombo': { const set = new Set((v||[]).map(String)); return row => { const d = Utils.toDate(row[col]); return d && set.has(String(d.getMonth()+1)); }; }
       case 'numberrange': {
         const min = v.min !== '' && v.min !== undefined ? parseFloat(v.min) : -Infinity;
@@ -2740,7 +2760,7 @@ const KpiMgr = {
 const FilterMgr = {
   addFilter(cfg){
     App.filters.push(cfg);
-    App.filterValues[cfg.id] = (cfg.type === 'multiselect' || cfg.type === 'checkbox' || cfg.type === 'monthcombo') ? [] : (cfg.type === 'daterange' || cfg.type === 'numberrange') ? {} : '';
+    App.filterValues[cfg.id] = (cfg.type === 'multiselect' || cfg.type === 'checkbox' || cfg.type === 'monthcombo') ? [] : (cfg.type === 'numberrange') ? {} : '';
     FilterMgr.renderList(); FilterMgr.renderBar();
   },
   removeFilter(id){
@@ -2751,7 +2771,7 @@ const FilterMgr = {
   },
   clearAll(){
     App.filters.forEach(f => {
-      App.filterValues[f.id] = (f.type === 'multiselect' || f.type === 'checkbox' || f.type === 'monthcombo') ? [] : (f.type === 'daterange' || f.type === 'numberrange') ? {} : '';
+      App.filterValues[f.id] = (f.type === 'multiselect' || f.type === 'checkbox' || f.type === 'monthcombo') ? [] : (f.type === 'numberrange') ? {} : '';
     });
     App.crossFilter = null;
     App.filteredCache = null; FilterMgr.renderBar(); UI.refreshAll(); UI.renderCrossFilterIndicator();
@@ -2815,7 +2835,8 @@ const FilterMgr = {
     const valueStrs = values.map(String);
     const debouncedChange = Utils.debounce(() => FilterMgr.onChange(), 250);
     const monthValues = (f.type === 'month' || f.type === 'monthcombo') ? DataMgr.distinctMonthsFiltered(f.column, f.id) : null;
-    const yearValues = f.type === 'year' ? DataMgr.distinctFYYearsFiltered(f.column, f.id) : null;
+    const calYearValues = f.type === 'year' ? DataMgr.distinctYearsFiltered(f.column, f.id) : null;
+    const fyValues = f.type === 'fy' ? DataMgr.distinctFYYearsFiltered(f.column, f.id) : null;
 
     switch(f.type){
       case 'dropdown': case 'radio': {
@@ -2830,7 +2851,12 @@ const FilterMgr = {
       }
       case 'year': {
         const cur = App.filterValues[f.id];
-        const fyLabels = yearValues.map(y => Utils.fyLabel(y));
+        if (cur !== '' && cur !== undefined && !calYearValues.map(String).includes(String(cur))){ App.filterValues[f.id] = ''; App.filteredCache = null; }
+        break;
+      }
+      case 'fy': {
+        const cur = App.filterValues[f.id];
+        const fyLabels = fyValues.map(y => Utils.fyLabel(y));
         if (cur !== '' && cur !== undefined && !fyLabels.includes(String(cur))){ App.filterValues[f.id] = ''; App.filteredCache = null; }
         break;
       }
@@ -2897,20 +2923,9 @@ const FilterMgr = {
         wrap.appendChild(inp);
         break;
       }
-      case 'daterange': {
-        const row = document.createElement('div'); row.className = 'd-flex gap-1';
-        const s = document.createElement('input'); s.type='date'; s.className='form-control form-control-sm';
-        const e = document.createElement('input'); e.type='date'; e.className='form-control form-control-sm';
-        const cur = App.filterValues[f.id] || {};
-        s.value = cur.start || ''; e.value = cur.end || '';
-        s.addEventListener('change', () => { App.filterValues[f.id] = {...App.filterValues[f.id], start: s.value}; FilterMgr.onChange(); });
-        e.addEventListener('change', () => { App.filterValues[f.id] = {...App.filterValues[f.id], end: e.value}; FilterMgr.onChange(); });
-        row.appendChild(s); row.appendChild(e); wrap.appendChild(row);
-        break;
-      }
       case 'month': {
         const sel = document.createElement('select'); sel.className = 'form-select form-select-sm';
-        sel.innerHTML = '<option value="">All</option>' + monthValues.map(i => `<option value="${i}">${Utils.FY_MONTH_ABBR[i]}</option>`).join('');
+        sel.innerHTML = '<option value="">All</option>' + monthValues.map(i => `<option value="${i}">${Utils.MONTH_ABBR[i]}</option>`).join('');
         sel.value = App.filterValues[f.id] || '';
         sel.addEventListener('change', () => { App.filterValues[f.id] = sel.value; FilterMgr.onChange(); });
         wrap.appendChild(sel);
@@ -2918,7 +2933,7 @@ const FilterMgr = {
       }
       case 'monthcombo': {
         const box = document.createElement('div'); box.className = 'filter-chip-group filter-chip-group--months';
-        box.innerHTML = monthValues.map(i => `<span class="filter-chip" data-v="${i}">${Utils.FY_MONTH_ABBR[i]}</span>`).join('');
+        box.innerHTML = monthValues.map(i => `<span class="filter-chip" data-v="${i}">${Utils.MONTH_ABBR[i]}</span>`).join('');
         box.querySelectorAll('.filter-chip').forEach(chip => {
           const arr = App.filterValues[f.id] || [];
           if (arr.map(String).includes(chip.dataset.v)) chip.classList.add('active');
@@ -2934,17 +2949,18 @@ const FilterMgr = {
       }
       case 'year': {
         const sel = document.createElement('select'); sel.className = 'form-select form-select-sm';
-        sel.innerHTML = '<option value="">All</option>' + yearValues.map(y => `<option value="${Utils.fyLabel(y)}">FY ${Utils.fyLabel(y)}</option>`).join('');
+        sel.innerHTML = '<option value="">All</option>' + calYearValues.map(y => `<option value="${y}">${y}</option>`).join('');
         sel.value = App.filterValues[f.id] || '';
         sel.addEventListener('change', () => { App.filterValues[f.id] = sel.value; FilterMgr.onChange(); });
         wrap.appendChild(sel);
         break;
       }
-      case 'asondate': {
-        const inp = document.createElement('input'); inp.type = 'date'; inp.className = 'form-control form-control-sm';
-        inp.value = App.filterValues[f.id] || '';
-        inp.addEventListener('change', () => { App.filterValues[f.id] = inp.value; FilterMgr.onChange(); });
-        wrap.appendChild(inp);
+      case 'fy': {
+        const sel = document.createElement('select'); sel.className = 'form-select form-select-sm';
+        sel.innerHTML = '<option value="">All</option>' + fyValues.map(y => `<option value="${Utils.fyLabel(y)}">FY ${Utils.fyLabel(y)}</option>`).join('');
+        sel.value = App.filterValues[f.id] || '';
+        sel.addEventListener('change', () => { App.filterValues[f.id] = sel.value; FilterMgr.onChange(); });
+        wrap.appendChild(sel);
         break;
       }
       case 'numberrange': {
@@ -4413,8 +4429,8 @@ const StorageMgr = {
     const raw = localStorage.getItem(STORAGE_KEY); if (!raw) return false;
     let cfg; try { cfg = JSON.parse(raw); } catch(e){ return false; }
 
-    App.kpis = cfg.kpis || []; App.kpiNumberFormat = cfg.kpiNumberFormat || 'short'; App.filters = cfg.filters || []; App.filterValues = {};
-    App.filters.forEach(f => App.filterValues[f.id] = (f.type==='multiselect'||f.type==='checkbox') ? [] : (f.type==='daterange'||f.type==='numberrange') ? {} : '');
+    App.kpis = cfg.kpis || []; App.kpiNumberFormat = cfg.kpiNumberFormat || 'short'; App.filters = Utils.dropRemovedFilterTypes(cfg.filters); App.filterValues = {};
+    App.filters.forEach(f => App.filterValues[f.id] = (f.type==='multiselect'||f.type==='checkbox'||f.type==='monthcombo') ? [] : (f.type==='numberrange') ? {} : '');
     App.tables = cfg.tables || []; App.charts = cfg.charts || []; App.textboxes = cfg.textboxes || []; App.theme = cfg.theme || 'system';
     App.themeAccent = cfg.themeAccent || null; App.bgColor = cfg.bgColor || null; App.title = cfg.title || App.title;
     App.layoutOrder = cfg.layoutOrder || []; App.layout = cfg.layout || {}; App.fileName = cfg.fileName || null;
@@ -4479,8 +4495,8 @@ const ShareMgr = {
     const hash = location.hash || ''; if (!hash.startsWith('#state=')) return false;
     try {
       const json = LZString.decompressFromEncodedURIComponent(hash.slice(7)); const cfg = JSON.parse(json);
-      App.kpis = cfg.kpis || []; App.kpiNumberFormat = cfg.kpiNumberFormat || 'short'; App.filters = cfg.filters || []; App.filterValues = {};
-      App.filters.forEach(f => App.filterValues[f.id] = (f.type==='multiselect'||f.type==='checkbox') ? [] : (f.type==='daterange'||f.type==='numberrange') ? {} : '');
+      App.kpis = cfg.kpis || []; App.kpiNumberFormat = cfg.kpiNumberFormat || 'short'; App.filters = Utils.dropRemovedFilterTypes(cfg.filters); App.filterValues = {};
+      App.filters.forEach(f => App.filterValues[f.id] = (f.type==='multiselect'||f.type==='checkbox'||f.type==='monthcombo') ? [] : (f.type==='numberrange') ? {} : '');
       App.tables = cfg.tables || []; App.charts = cfg.charts || []; App.textboxes = cfg.textboxes || []; App.theme = cfg.theme || 'system';
       App.themeAccent = cfg.themeAccent || null; App.bgColor = cfg.bgColor || null; App.title = cfg.title || App.title;
       App.layoutOrder = cfg.layoutOrder || []; App.layout = cfg.layout || {}; App.fileName = cfg.fileName || null;
@@ -5584,7 +5600,7 @@ const UI = {
     const isDateCol = App.columnTypes[col] === 'date';
     let values;
     if (isDateCol && (dateAgg === 'month' || dateAgg === 'monthcombo')){
-      // Month-level categories only, financial-year order (Apr..Mar) — never one chip per date.
+      // Month-level categories only, plain calendar order (Jan..Dec) — never one chip per date.
       const present = new Set();
       App.data.forEach(r => { const d = Utils.toDate(r[col]); if (d) present.add(d.getMonth()+1); });
       let months = Array.from(present);
@@ -5595,7 +5611,7 @@ const UI = {
         const selected = comboFilter ? (App.filterValues[comboFilter.id] || []).map(String) : [];
         if (selected.length) months = months.filter(m => selected.includes(String(m)));
       }
-      months.sort((a,b) => Utils.fyMonthIndex(a-1) - Utils.fyMonthIndex(b-1));
+      months.sort((a,b) => a - b); // calendar order: Jan(1)..Dec(12)
       values = months.map(m => Utils.DATE_AGG_MONTHS[m-1]);
     } else if (isDateCol && dateAgg === 'year'){
       // Year-level categories only.
@@ -5665,7 +5681,7 @@ const UI = {
       const fields = { name: document.getElementById('filter-name').value.trim(), column: document.getElementById('filter-column').value, type: document.getElementById('filter-type').value };
       if (App.editId.filter){
         const existing = App.filters.find(f => f.id === App.editId.filter); Object.assign(existing, fields);
-        App.filterValues[existing.id] = (existing.type === 'multiselect' || existing.type === 'checkbox') ? [] : (existing.type === 'daterange' || existing.type === 'numberrange') ? {} : '';
+        App.filterValues[existing.id] = (existing.type === 'multiselect' || existing.type === 'checkbox' || existing.type === 'monthcombo') ? [] : (existing.type === 'numberrange') ? {} : '';
         App.filteredCache = null; FilterMgr.cancelEdit(); FilterMgr.renderList(); FilterMgr.renderBar(); UI.refreshAll(); Utils.toast(`Filter "${fields.name}" updated`);
       } else {
         const cfg = { id: nextId('flt'), ...fields }; FilterMgr.addFilter(cfg); e.target.reset(); Utils.toast(`Filter "${cfg.name}" added`);
