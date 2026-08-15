@@ -1740,13 +1740,13 @@ const DataMgr = {
   cacheBustParam(){
     return `_cb=${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   },
-  gvizCsvUrl(sheetId, gid, kind){
+  gvizCsvUrl(sheetId, gid, kind, sheetName){
     if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv` + (gid ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
-    return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv` + (gid !== undefined && gid !== null && gid !== '' ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
-  },
-  exportCsvUrl(sheetId, gid, kind){
-    if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv` + (gid ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
-    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv` + (gid !== undefined && gid !== null && gid !== '' ? `&gid=${gid}` : '') + `&${DataMgr.cacheBustParam()}`;
+    // gviz can select a tab either by gid or by its NAME (`&sheet=`). Name-based selection is
+    // what lets the multi-tab refresh fallback below refetch every already-known tab dynamically
+    // without ever needing to know each tab's gid.
+    const selector = sheetName ? `&sheet=${encodeURIComponent(sheetName)}` : (gid !== undefined && gid !== null && gid !== '' ? `&gid=${gid}` : '');
+    return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv` + selector + `&${DataMgr.cacheBustParam()}`;
   },
   exportXlsxUrl(sheetId, kind){
     if (kind === 'published') return `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=xlsx` + `&${DataMgr.cacheBustParam()}`;
@@ -1819,6 +1819,10 @@ const DataMgr = {
     // few times with backoff before giving up and dropping to the single-tab CSV fallback below.
     const XLSX_RETRY_ATTEMPTS = 3;
     const XLSX_RETRY_DELAY_MS = 700;
+    // [DIAG] Temporary runtime tracing — safe to delete once the stale-tab issue is confirmed
+    // fixed. Logs which path actually ran and what it detected, since the user-facing toast
+    // doesn't distinguish "full workbook" refresh from the per-tab CSV fallback.
+    console.info('[GSheet refresh] starting — forceRefresh:', !!opts.forceRefresh, 'kind:', kind, 'sheetId:', sheetId);
     for (let attempt = 1; attempt <= XLSX_RETRY_ATTEMPTS; attempt++){
       try {
         const res = await fetch(DataMgr.exportXlsxUrl(sheetId, kind), { cache: 'no-store' });
@@ -1828,7 +1832,16 @@ const DataMgr = {
           const looksLikeHtml = /^<!DOCTYPE html/i.test(head) || /^<html/i.test(head);
           if (!looksLikeHtml && buf.byteLength){
             const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-            if (wb.SheetNames && wb.SheetNames.length){ wired(wb, opts); return true; }
+            if (wb.SheetNames && wb.SheetNames.length){
+              // [DIAG] Row counts per tab as parsed straight out of THIS xlsx download — if these
+              // numbers/values are already stale here, the problem is Google's export endpoint
+              // itself (server-side snapshot), not anything downstream in this app.
+              console.info('[GSheet refresh] xlsx export OK — tabs:', wb.SheetNames, wb.SheetNames.map(n => {
+                const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: '' });
+                return `${n}: ${rows.length} rows`;
+              }));
+              wired(wb, opts); return true;
+            }
             throw new Error('empty: workbook had no sheets');
           }
           break; // got a real (non-transient) response that just isn't a workbook — retrying won't change that
@@ -1846,57 +1859,90 @@ const DataMgr = {
         console.warn('Full-workbook (xlsx) export of Google Sheet failed after retries, falling back to single-tab CSV', err);
       }
     }
-    const attempts = [DataMgr.gvizCsvUrl(sheetId, gid, kind), DataMgr.exportCsvUrl(sheetId, gid, kind)];
-    let lastErr = null, lastRes = null;
-    for (const url of attempts){
+    // Fallback used when the full-workbook (xlsx) export failed/hiccuped above. For a 'published'
+    // link there's no reliable way to select a tab by name (publish-to-web CSV only supports gid),
+    // so that case stays limited to the single primary tab, same as before. For a standard sheet
+    // link, gviz supports selecting a tab by NAME (see gvizCsvUrl), so instead of only refreshing
+    // the primary tab, refetch every tab this dashboard already knows about (App.sheetNames — itself
+    // populated dynamically from the last successful full-workbook load, never hardcoded) and merge
+    // them all back in through the ONE shared _applySheetTables()/applyRelationships() pipeline.
+    // A brand-new tab can only be discovered via a successful full-workbook fetch (there's no
+    // lightweight "list tabs" call without the Sheets API), so it's picked up automatically the
+    // next time that xlsx export succeeds — no code change needed either way.
+    if (kind === 'published'){
       try {
-        const res = await fetch(url, { cache: 'no-store' });
-        lastRes = res;
+        const res = await fetch(DataMgr.gvizCsvUrl(sheetId, gid, kind), { cache: 'no-store' });
         if (!res.ok) throw new Error('http ' + res.status);
         const csvText = await res.text();
         if (!csvText || /^<!DOCTYPE html/i.test(csvText.trim())) throw new Error('private: looks like a login/HTML page, not CSV');
         if (!csvText.trim()) throw new Error('empty: sheet returned no data');
         const wb = XLSX.read(csvText, { type: 'string', cellDates: true });
-        const csvSheetName = wb.SheetNames[0];
-        const csvRows = XLSX.utils.sheet_to_json(wb.Sheets[csvSheetName], { defval: '' });
-        const csvColumns = csvRows.length ? Object.keys(csvRows[0]) : [];
-        const csvColumnTypes = {};
-        csvColumns.forEach(c => csvColumnTypes[c] = DataMgr.detectTypeFor(csvRows, c));
-
-        // This CSV export can only ever return ONE tab (whichever `gid` is being refreshed) —
-        // never the whole workbook. If a multi-sheet data model is already loaded (relationships
-        // configured across e.g. Customer Details / Order Sheet / Payment Sheet), blowing away
-        // App.sheetTables here would silently delete the other tabs and break every join built on
-        // top of them — which is exactly the "relationships disappear on refresh" bug. So: merge
-        // this one refreshed tab into the existing model instead of replacing it wholesale, then
-        // funnel through the same _applySheetTables() path every other refresh uses, so saved
-        // relationships get re-applied instead of skipped.
-        const hasExistingModel = App.sheetTables && Object.keys(App.sheetTables).length > 0;
-        const targetName = (hasExistingModel && App.dataSource.gsheetName && App.sheetTables[App.dataSource.gsheetName])
-          ? App.dataSource.gsheetName
-          : csvSheetName;
-
-        App.workbookRef = null; // no full workbook available from this fallback — sheetTables is now the source of truth
-        if (hasExistingModel){
-          App.sheetTables[targetName] = { name: targetName, columns: csvColumns, columnTypes: csvColumnTypes, rows: csvRows };
-        } else {
-          App.sheetTables = { [targetName]: { name: targetName, columns: csvColumns, columnTypes: csvColumnTypes, rows: csvRows } };
-          App.sheetNames = [targetName];
-          App.dataSource.gsheetName = targetName;
-          document.getElementById('sheet-picker-wrap').classList.add('d-none');
-        }
+        const name = wb.SheetNames[0];
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
+        const columns = rows.length ? Object.keys(rows[0]) : [];
+        const columnTypes = {}; columns.forEach(c => columnTypes[c] = DataMgr.detectTypeFor(rows, c));
+        App.workbookRef = null;
+        App.sheetTables = { [name]: { name, columns, columnTypes, rows } };
+        App.sheetNames = [name];
+        App.dataSource.gsheetName = name;
         App.fileName = 'Google Sheet';
+        document.getElementById('sheet-picker-wrap').classList.add('d-none');
         UI.renderDataSourceStatus();
         DataMgr.writeGsheetCache(sheetId, kind, gid, App.sheetTables, App.sheetNames);
-        DataMgr._applySheetTables(opts, { fromCache: false }); // re-runs Auto-Detect's saved relationships/join, same as the full-workbook path
-        if (opts.initial) Utils.toast('Connected to Google Sheet (only one tab could be read)');
-        else if (hasExistingModel && App.relationships && App.relationships.length) Utils.toast('Refreshed the primary sheet — other joined tabs kept their last synced data (a full multi-tab refresh wasn\u2019t available this time).', true);
+        DataMgr._applySheetTables(opts, { fromCache: false });
+        if (opts.initial) Utils.toast('Connected to Google Sheet');
         return true;
-      } catch (err){ lastErr = err; continue; }
+      } catch (err){
+        console.error(err);
+        Utils.toast(DataMgr.friendlyGSheetError(err, null), true);
+        return false;
+      }
     }
-    console.error(lastErr);
-    Utils.toast(DataMgr.friendlyGSheetError(lastErr, lastRes), true);
-    return false;
+
+    const knownNames = (App.sheetNames && App.sheetNames.length) ? App.sheetNames.slice() : [App.dataSource.gsheetName].filter(Boolean);
+    if (!knownNames.length){
+      console.error('No sheet name known to fetch');
+      Utils.toast(DataMgr.friendlyGSheetError(new Error('empty: no sheet available'), null), true);
+      return false;
+    }
+    // [DIAG] Reaching this point means the xlsx full-workbook export above did NOT return a usable
+    // workbook after all retries — this per-tab CSV loop is a fallback, not the normal path.
+    console.info('[GSheet refresh] xlsx export failed/unusable — falling back to per-tab CSV for:', knownNames);
+    const refreshedTables = {}; let firstErr = null;
+    for (const name of knownNames){
+      try {
+        const res = await fetch(DataMgr.gvizCsvUrl(sheetId, gid, kind, name), { cache: 'no-store' });
+        if (!res.ok) throw new Error('http ' + res.status);
+        const csvText = await res.text();
+        if (!csvText || /^<!DOCTYPE html/i.test(csvText.trim())) throw new Error('private: looks like a login/HTML page, not CSV');
+        const wb = XLSX.read(csvText, { type: 'string', cellDates: true });
+        const tabName = wb.SheetNames[0] || name;
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[tabName], { defval: '' });
+        const columns = rows.length ? Object.keys(rows[0]) : [];
+        const columnTypes = {}; columns.forEach(c => columnTypes[c] = DataMgr.detectTypeFor(rows, c));
+        refreshedTables[name] = { name, columns, columnTypes, rows };
+        console.info(`[GSheet refresh] fallback tab "${name}" fetched — ${rows.length} rows`);
+      } catch (err){ if (!firstErr) firstErr = err; console.warn(`[GSheet refresh] fallback tab "${name}" failed:`, err.message); }
+    }
+    const refreshedCount = Object.keys(refreshedTables).length;
+    if (!refreshedCount){
+      console.error(firstErr);
+      Utils.toast(DataMgr.friendlyGSheetError(firstErr, null), true);
+      return false;
+    }
+    App.workbookRef = null; // no full workbook available from this fallback — sheetTables is now the source of truth
+    App.sheetTables = App.sheetTables || {};
+    Object.assign(App.sheetTables, refreshedTables); // merge — a tab that failed this cycle just keeps its last known data
+    if (!App.sheetNames || !App.sheetNames.length) App.sheetNames = Object.keys(App.sheetTables);
+    if (!App.dataSource.gsheetName || !App.sheetTables[App.dataSource.gsheetName]) App.dataSource.gsheetName = App.sheetNames[0];
+    App.fileName = 'Google Sheet';
+    UI.renderDataSourceStatus();
+    DataMgr.writeGsheetCache(sheetId, kind, gid, App.sheetTables, App.sheetNames);
+    DataMgr._applySheetTables(opts, { fromCache: false }); // re-runs saved relationships/joins across ALL refreshed tabs, same as the full-workbook path
+    const failedCount = knownNames.length - refreshedCount;
+    if (opts.initial) Utils.toast('Connected to Google Sheet' + (failedCount ? ` (${failedCount} tab${failedCount > 1 ? 's' : ''} couldn't be read)` : ''));
+    else if (failedCount) Utils.toast(`Refreshed ${refreshedCount}/${knownNames.length} tabs — ${failedCount} tab${failedCount > 1 ? 's' : ''} kept last synced data (temporary fetch issue).`, true);
+    return true;
   },
   // Builds App.sheetTables — the multi-sheet Data Model — from every tab in a loaded workbook.
   // App.data/App.columns (the flat table every existing chart/KPI/filter/table already reads)
@@ -2042,7 +2088,13 @@ const DataMgr = {
   applyRelationships(opts){
     opts = opts || {};
     if (!App.dataSource.gsheetName){ if (!opts.silent) Utils.toast('Pick a primary sheet first', true); return false; }
+    // [DIAG] Snapshot of what's actually sitting in App.sheetTables right before the join runs —
+    // if a tab's row count/data here already looks stale, the fetch itself never updated it and
+    // the problem is upstream (Google's export cache or the fetch path), not the join engine.
+    console.info('[GSheet refresh] pre-join sheetTables:', Object.keys(App.sheetTables).map(n => `${n}: ${App.sheetTables[n].rows.length} rows`));
+    console.info('[GSheet refresh] relationships in use:', App.relationships.map(r => `${r.base} -> ${r.other} on ${r.baseKeys}`));
     const { rows, errors, warnings } = JoinEngine.run(App.dataSource.gsheetName, App.relationships);
+    console.info('[GSheet refresh] post-join row count:', rows.length, errors.length ? { errors } : '');
     const box = document.getElementById('rel-validation');
     if (box){
       box.innerHTML = errors.map(e => `<div class="text-danger">${Utils.esc(e)}</div>`).join('')
