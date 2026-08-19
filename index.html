@@ -4002,7 +4002,13 @@ const LayoutMgr = {
     if (!el || !g) return;
     el.style.left = g.x + 'px'; el.style.top = g.y + 'px';
     el.style.width = g.w + 'px'; el.style.height = g.h + 'px';
-    el.style.zIndex = g.z; el.style.order = g.z;
+    // zIndex controls desktop overlap stacking only (bumped by drag/resize/click);
+    // it must NOT drive mobile stack order, or touching a widget on desktop would
+    // silently reshuffle it on mobile. Mobile order is derived from the widget's
+    // saved vertical position (g.y) via --wg-order, so it always matches what the
+    // user visually arranged on the desktop canvas, independent of z-index.
+    el.style.zIndex = g.z;
+    el.style.setProperty('--wg-order', g.y);
     el.classList.toggle('wg-hidden', g.visible === false);
     const icon = el.querySelector('.w-visibility i');
     if (icon){ icon.classList.toggle('fa-eye', g.visible !== false); icon.classList.toggle('fa-eye-slash', g.visible === false); }
@@ -4017,7 +4023,8 @@ const LayoutMgr = {
   bringToFront(id){
     const g = App.layout[id]; if (!g) return;
     LayoutMgr.zTop += 1; g.z = LayoutMgr.zTop;
-    const el = document.getElementById('widget-' + id); if (el){ el.style.zIndex = g.z; el.style.order = g.z; }
+    // Bring-to-front only affects desktop overlap stacking, never mobile order (see applyGeom).
+    const el = document.getElementById('widget-' + id); if (el){ el.style.zIndex = g.z; }
   },
 
   removeWidget(id){
@@ -4147,7 +4154,8 @@ const LayoutMgr = {
   },
 
   // Desktop stays fully freeform; tablet/mobile auto-stack into a single readable column (order
-  // follows each widget's z so the visual stacking order carries over) with no overlap possible.
+  // follows each widget's saved top position, --wg-order, so the same visual top-to-bottom
+  // order the user arranged on desktop carries over) with no overlap possible.
   applyResponsive(){
     const stacked = window.innerWidth <= LayoutMgr.STACK_BREAKPOINT;
     const wasStacked = LayoutMgr.canvas.classList.contains('stacked-mode');
