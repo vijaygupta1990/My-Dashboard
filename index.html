@@ -942,6 +942,7 @@ service cloud.firestore {
               <button type="button" class="tb-btn" id="rel-autodetect-btn" style="font-size:.72rem;">Auto-Detect</button>
               <button type="button" class="tb-btn primary" id="rel-apply-btn" style="font-size:.72rem;">Apply Join</button>
             </div>
+            <div id="rel-progress" class="mini text-slate-soft d-none mb-1"><i class="fa-solid fa-spinner fa-spin"></i> <span id="rel-progress-text"></span></div>
             <div id="rel-validation" class="small"></div>
           </div>
         </div>
@@ -1408,6 +1409,12 @@ const App = {
 function nextId(prefix){ return prefix + (App.idSeq++); }
 
 const Utils = {
+  // Hands control back to the browser for one frame (falls back to a macrotask if rAF is
+  // unavailable) — used to chunk large synchronous loops (e.g. Apply Join's calculated-field
+  // pass over 15,000+ rows) so the main thread never blocks long enough to trigger Chrome's
+  // "Page Unresponsive" warning, without pulling in a Web Worker's serialization overhead for a
+  // dataset this size.
+  yieldFrame(){ return new Promise(res => (window.requestAnimationFrame ? requestAnimationFrame(() => res()) : setTimeout(res, 0))); },
   // Strips thousands separators, currency symbols (₹ $ € £), a trailing %, surrounding
   // whitespace, and accounting-style negative parentheses "(123)" -> "-123" — this is what the
   // Google Sheets gviz CSV fallback (used when the full-workbook xlsx export fails/hiccups)
@@ -2038,8 +2045,7 @@ const DataMgr = {
     // background refresh / reload always recomputes the FULL model, not just the primary tab.
     // Otherwise (no relationships configured) this is the original single-sheet behavior.
     if (App.relationships && App.relationships.length){
-      const ok = DataMgr.applyRelationships({ silent: true });
-      if (!ok) DataMgr.loadSheet(target); // relationships no longer resolve (e.g. a joined tab was removed) — fall back rather than show nothing
+      DataMgr.applyRelationships({ silent: true }).then(ok => { if (!ok) DataMgr.loadSheet(target); });
     } else {
       DataMgr.loadSheet(target);
     }
@@ -2078,7 +2084,7 @@ const DataMgr = {
     App.filteredCache = null;
     UI.refreshAll();
   },
-  loadSheet(sheetName){
+  async loadSheet(sheetName){
     let rows;
     if (App.workbookRef){
       const sheet = App.workbookRef.Sheets[sheetName];
@@ -2106,22 +2112,38 @@ const DataMgr = {
     // doesn't have them yet — reading every calculated field as a column the sheet "removed", and
     // permanently deleting any filter/table/chart/KPI built on one. That was the actual cause of
     // calculated fields "disappearing" on refresh even though the formulas themselves were fine.
-    CalcFieldMgr.applyAll();
+    // Awaited (calc fields now process in yielding chunks) so drift-check/render below always see
+    // the fully-computed column set, never a partially-applied one.
+    await CalcFieldMgr.applyAll({ deferRender: true });
     if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
     UI.renderUploadSummary();
     UI.populateAllColumnSelectors();
     UI.refreshAll();
   },
+
   // Recomputes App.data by joining every configured relationship across the selected sheet tabs
   // (Sheet1..Sheet5, etc) — this is the shared "apply the multi-sheet data model" path used both
   // by the manual "Combine Sheets" button AND automatically after every live refetch (initial
   // connect, background auto-refresh, explicit Refresh, and a shared-link reload), so a saved
   // multi-sheet dashboard keeps recombining its sheets the same way every time, not just once.
   // opts.silent suppresses the toasts for the automatic paths; the manual button still gets them.
-  applyRelationships(opts){
+  // opts.onProgress(stage) reports real (not simulated) stage transitions to the caller so the UI
+  // can show what's actually happening — see UI.wireDataModel's progress overlay.
+  async applyRelationships(opts){
     opts = opts || {};
+    const report = (stage) => { if (opts.onProgress) opts.onProgress(stage); };
     if (!App.dataSource.gsheetName){ if (!opts.silent) Utils.toast('Pick a primary sheet first', true); return false; }
-    const { rows, errors, warnings } = JoinEngine.run(App.dataSource.gsheetName, App.relationships);
+    report('Preparing indexes…');
+    await Utils.yieldFrame(); // let the progress overlay actually paint before the (synchronous) join runs
+    let rows, errors, warnings;
+    try {
+      report('Joining rows…');
+      ({ rows, errors, warnings } = JoinEngine.run(App.dataSource.gsheetName, App.relationships));
+    } catch (err){
+      console.error('Apply Join failed', err);
+      Utils.toast('Join failed. Please check the selected relationship and join columns.', true);
+      return false;
+    }
     const box = document.getElementById('rel-validation');
     if (box){
       box.innerHTML = errors.map(e => `<div class="text-danger">${Utils.esc(e)}</div>`).join('')
@@ -2145,8 +2167,19 @@ const DataMgr = {
     // drift, so their column names are already present in newColumns and never get misread as
     // columns the sheet "removed" — which was silently deleting filters/table columns/chart axes/
     // KPIs built on a calculated field every single refresh.
-    CalcFieldMgr.applyAll();
+    //
+    // This is also THE actual "Apply Join freezes the tab" fix: applyAll() now (a) compiles each
+    // formula's column regexes ONCE instead of once per column per row, (b) processes rows in
+    // yielding chunks instead of one unbroken synchronous pass, and (c) computes every calculated
+    // field first and renders the dashboard exactly ONCE at the end — previously every calculated
+    // field triggered its own full KPI/table/chart re-render, so N calculated fields meant N full
+    // dashboard rebuilds back to back before the browser ever got to paint. The join itself
+    // (JoinEngine.joinTwo) was already an indexed Map lookup, not the nested-loop O(n²) scan this
+    // symptom usually points to — it wasn't the bottleneck.
+    if (App.calcFields.length) report(`Applying ${App.calcFields.length} calculated field(s)…`);
+    await CalcFieldMgr.applyAll({ deferRender: true, onProgress: (done, total) => report(`Applying calculated fields… ${done.toLocaleString()}/${total.toLocaleString()} rows`) });
     if (prevColumns.length) DataMgr.reconcileColumnDrift(prevColumns, App.columns);
+    report('Finalizing dashboard…');
     UI.renderUploadSummary(); UI.populateAllColumnSelectors(); UI.refreshAll();
     if (!opts.silent) Utils.toast(`Combined sheets — ${rows.length.toLocaleString()} rows, ${App.columns.length} columns.`);
     return true;
@@ -2502,39 +2535,75 @@ const JoinEngine = {
    never execute arbitrary JS, unlike a raw eval() of user input.
 ================================================================= */
 const CalcFieldMgr = {
-  evaluate(formula, row){
+  ROW_CHUNK: 2000, // rows processed per synchronous slice before yielding a frame — keeps Chrome's "unresponsive" watchdog from firing on large joined datasets
+  // Column-name → RegExp is now built ONCE per apply() call (column names don't change row to row)
+  // instead of once per COLUMN PER ROW as before — for a joined 15,000-row / 40-column dataset that
+  // was ~600,000 RegExp compilations for a single calculated field, and the dominant cost of "Apply
+  // Join" freezing the tab. Longest-name-first so e.g. "Net Sales" isn't partially matched by "Sales".
+  compile(columns){
+    return [...columns].sort((a,b) => b.length - a.length)
+      .map(col => ({ col, re: new RegExp(col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g') }));
+  },
+  evaluateCompiled(compiled, formula, row){
     let expr = String(formula || '');
-    Object.keys(row).sort((a,b) => b.length - a.length).forEach(col => {
-      const re = new RegExp(col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    for (let i = 0; i < compiled.length; i++){
+      const { col, re } = compiled[i];
+      if (expr.indexOf(col) === -1) continue; // cheap substring pre-check skips the regex entirely for columns not referenced by this formula
       const n = Utils.toNum(row[col]); expr = expr.replace(re, `(${n === null ? 0 : n})`);
-    });
+    }
     if (!/^[\d+\-*/().\s]*$/.test(expr) || !expr.trim()) return null; // reject anything non-arithmetic
     try { return Function('"use strict"; return (' + expr + ');')(); } catch(e){ return null; }
   },
-  // Adds/overwrites `field.name` as a computed column on every row of App.data, then refreshes
-  // column selectors and every widget — reusing the exact same reconcile/refresh path a normal
-  // sheet reload uses, so KPIs/Charts immediately see the new field as a selectable Y Axis.
-  apply(field){
+  // Single-row entry point kept for backward compatibility with anything calling
+  // CalcFieldMgr.evaluate(formula, row) directly — not used on the hot (many-rows) path anymore.
+  evaluate(formula, row){ return CalcFieldMgr.evaluateCompiled(CalcFieldMgr.compile(Object.keys(row)), formula, row); },
+  // Adds/overwrites `field.name` as a computed column on every row of App.data, processed in
+  // chunks with a yield between them so a large joined dataset never blocks the main thread for
+  // long enough to freeze the tab. Rendering is decoupled from computation (opts.deferRender) so
+  // applyAll() can compute every calculated field first and trigger exactly ONE dashboard
+  // refresh at the end, instead of one full re-render per field.
+  async apply(field, opts){
+    opts = opts || {};
     if (!App.data.length) return;
-    App.data = App.data.map(r => ({ ...r, [field.name]: CalcFieldMgr.evaluate(field.formula, r) }));
+    const columns = App.data[0] ? Object.keys(App.data[0]) : App.columns;
+    const compiled = CalcFieldMgr.compile(columns);
+    const n = App.data.length;
+    for (let i = 0; i < n; i += CalcFieldMgr.ROW_CHUNK){
+      const end = Math.min(i + CalcFieldMgr.ROW_CHUNK, n);
+      for (let r = i; r < end; r++){
+        const row = App.data[r];
+        App.data[r] = { ...row, [field.name]: CalcFieldMgr.evaluateCompiled(compiled, field.formula, row) };
+      }
+      if (opts.onProgress) opts.onProgress(end, n);
+      if (end < n) await Utils.yieldFrame();
+    }
     if (!App.columns.includes(field.name)) App.columns.push(field.name);
     App.columnTypes[field.name] = 'number';
     App.filteredCache = null;
-    UI.populateAllColumnSelectors(); UI.refreshAll();
+    if (!opts.deferRender){ UI.populateAllColumnSelectors(); UI.refreshAll(); }
   },
-  applyAll(){ App.calcFields.forEach(f => CalcFieldMgr.apply(f)); },
-  add(name, formula, kind){
+  async applyAll(opts){
+    opts = opts || {};
+    for (const f of App.calcFields){
+      await CalcFieldMgr.apply(f, { deferRender: true, onProgress: opts.onProgress });
+    }
+    if (!opts.deferRender){ UI.populateAllColumnSelectors(); UI.refreshAll(); }
+  },
+  async add(name, formula, kind){
     const field = { id: nextId('calc'), name, formula, kind: kind || 'column' };
     App.calcFields.push(field);
-    CalcFieldMgr.apply(field);
+    await CalcFieldMgr.apply(field);
     return field;
   },
-  remove(id){
+  async remove(id){
     App.calcFields = App.calcFields.filter(f => f.id !== id);
-    // Calculated columns live inline in App.data — the cleanest way to drop one is to reload the
-    // primary sheet (or re-run the join) and re-apply the remaining calc fields, exactly like a refresh.
-    if (App.dataSource.gsheetName) DataMgr.loadSheet(App.dataSource.gsheetName);
-    CalcFieldMgr.applyAll();
+    // Calculated columns live inline in App.data — the cleanest way to drop one is to recompute the
+    // data model (join, if one's configured, otherwise a plain sheet load) and re-apply the
+    // remaining calc fields, exactly like a refresh. Both paths already re-apply App.calcFields and
+    // render once internally, so nothing further is needed here.
+    if (App.relationships && App.relationships.length) await DataMgr.applyRelationships({ silent: true });
+    else if (App.dataSource.gsheetName) await DataMgr.loadSheet(App.dataSource.gsheetName);
+    else await CalcFieldMgr.applyAll(); // no sheet/join loaded (e.g. a plain file upload) — nothing else re-applies the fields
   }
 };
 
@@ -5508,7 +5577,7 @@ const UI = {
         </div>
         <div class="bc-meta">${Utils.esc(f.formula)}</div>
       </div>`).join('');
-    el.querySelectorAll('.calc-remove-btn').forEach(btn => btn.addEventListener('click', () => { CalcFieldMgr.remove(btn.dataset.id); UI.renderCalcFieldList(); Utils.toast('Calculated field removed'); }));
+    el.querySelectorAll('.calc-remove-btn').forEach(btn => btn.addEventListener('click', async () => { await CalcFieldMgr.remove(btn.dataset.id); UI.renderCalcFieldList(); Utils.toast('Calculated field removed'); }));
   },
   // Wires the Combine Sheets (Relationship Manager + Join Engine) and Calculated Fields controls.
   // Called once from UI.init() alongside the other wireXForm() calls.
@@ -5517,17 +5586,30 @@ const UI = {
       RelationshipMgr.autoDetect(); UI.renderRelationshipList();
       Utils.toast(`Found ${App.relationships.length} possible relationship(s) — review the join type before applying.`);
     });
-    document.getElementById('rel-apply-btn')?.addEventListener('click', () => {
+    document.getElementById('rel-apply-btn')?.addEventListener('click', async () => {
       if (App.role !== 'editor'){ Utils.toast('You\u2019re viewing this dashboard in read-only mode, so Apply Join can\u2019t run. Click "Sign in to edit" (or open this with an editor link) to make changes.', true); return; }
-      DataMgr.applyRelationships();
+      const btn = document.getElementById('rel-apply-btn');
+      const progress = document.getElementById('rel-progress'), progressText = document.getElementById('rel-progress-text');
+      btn.disabled = true; progress.classList.remove('d-none'); progressText.textContent = 'Starting…';
+      try {
+        await DataMgr.applyRelationships({ onProgress: (stage) => { progressText.textContent = stage; } });
+      } catch (err){
+        // applyRelationships already catches its own join-step errors and returns false — this is
+        // a last-resort net for anything unexpected, so a failed join can never leave the tab
+        // looking frozen or the button permanently disabled.
+        console.error('Apply Join failed', err);
+        Utils.toast('Join failed. Please check the selected relationship and join columns.', true);
+      } finally {
+        btn.disabled = false; progress.classList.add('d-none'); progressText.textContent = '';
+      }
     });
-    document.getElementById('calc-add-btn')?.addEventListener('click', () => {
+    document.getElementById('calc-add-btn')?.addEventListener('click', async () => {
       if (App.role !== 'editor'){ Utils.toast('You\u2019re viewing this dashboard in read-only mode, so calculated fields can\u2019t be added. Click "Sign in to edit" (or open this with an editor link) to make changes.', true); return; }
       const name = document.getElementById('calc-name').value.trim();
       const formula = document.getElementById('calc-formula').value.trim();
       if (!name || !formula){ Utils.toast('Enter a field name and a formula', true); return; }
       if (App.columns.includes(name)){ Utils.toast('A column with that name already exists', true); return; }
-      CalcFieldMgr.add(name, formula, 'column');
+      await CalcFieldMgr.add(name, formula, 'column');
       document.getElementById('calc-name').value = ''; document.getElementById('calc-formula').value = '';
       UI.renderCalcFieldList();
       Utils.toast(`Added calculated field "${name}"`);
